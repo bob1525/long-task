@@ -1,0 +1,262 @@
+:root {
+  color-scheme: dark;
+  --bg: #12110f;
+  --panel: #1b1814;
+  --panel-2: #262119;
+  --line: #3c342c;
+  --text: #f6efe4;
+  --muted: #a89884;
+  --accent: #e4a15a;
+  --good: #9dcc9a;
+  --danger: #e07a5f;
+  --shadow: 0 16px 40px rgba(0, 0, 0, 0.28);
+}
+
+* { box-sizing: border-box; }
+
+html, body, #root {
+  height: 100%;
+  margin: 0;
+}
+
+body {
+  background:
+    radial-gradient(900px 420px at 0% -10%, rgba(228, 161, 90, 0.09), transparent 55%),
+    linear-gradient(180deg, #16130f 0%, var(--bg) 280px);
+  color: var(--text);
+  font-family: "IBM Plex Sans", "Segoe UI", sans-serif;
+}
+
+button, select, input { font: inherit; color: inherit; }
+
+button {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 14px;
+  cursor: pointer;
+}
+
+button.primary {
+  background: var(--accent);
+  color: #2a1c0c;
+  border-color: transparent;
+  font-weight: 600;
+}
+
+button:disabled { opacity: 0.42; cursor: not-allowed; }
+
+button.texty, button.frame {
+  background: transparent;
+  border: 0;
+  border-radius: 8px;
+  padding: 6px 8px;
+}
+
+select {
+  margin-left: 8px;
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 999px;
+  padding: 8px 12px;
+}
+
+.app {
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding: 14px 16px 12px;
+}
+
+.top {
+  display: flex;
+  justify-content: space-between;
+  gap: 16px;
+  align-items: flex-end;
+}
+
+.brand { display: flex; gap: 12px; align-items: center; }
+.brand h1 {
+  margin: 0;
+  font-family: Fraunces, "Iowan Old Style", Palatino, serif;
+  font-size: 30px;
+  font-weight: 560;
+  letter-spacing: -0.03em;
+}
+.brand p { margin: 2px 0 0; color: var(--muted); font-size: 13px; }
+.mark { width: 38px; height: 38px; color: var(--accent); flex: none; }
+
+.controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
+.blurb, .dirty { margin: 0; color: var(--muted); font-size: 13px; }
+.dirty { color: var(--accent); }
+
+.workspace {
+  flex: 1;
+  min-height: 0;
+  display: grid;
+  grid-template-columns: minmax(0, 1.15fr) minmax(340px, 0.9fr);
+  gap: 12px;
+}
+
+.pane, .panel {
+  background: rgba(27, 24, 20, 0.92);
+  border: 1px solid var(--line);
+  border-radius: 16px;
+  box-shadow: var(--shadow);
+}
+
+.pane {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+
+.pane > header, .panel > header {
+  display: flex;
+  justify-content: space-between;
+  gap: 12px;
+  align-items: baseline;
+  padding: 8px 12px 4px;
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+
+.editor-host { flex: 1; min-height: 0; }
+.status-ready { color: var(--muted); }
+.status-running { color: var(--accent); }
+.status-done { color: var(--good); }
+.status-error { color: var(--danger); }
+.badge {
+  margin-left: 8px;
+  font-style: normal;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  color: var(--accent);
+  border: 1px solid color-mix(in srgb, var(--accent) 55%, transparent);
+  border-radius: 999px;
+  padding: 1px 8px;
+}
+
+.badge.tail {
+  color: var(--good);
+  border-color: color-mix(in srgb, var(--good) 55%, transparent);
+}
+
+.side {
+  min-height: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.panel { overflow: auto; }
+.panel.expr { border-left: 3px solid var(--accent); flex: none; }
+.panel.env { flex: 1; min-height: 0; }
+.panel.output { flex: none; max-height: 24%; }
+
+pre {
+  margin: 0;
+  padding: 0 12px 10px;
+  white-space: pre-wrap;
+  word-break: break-word;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 13px;
+}
+
+.action {
+  margin: 0;
+  padding: 0 12px 8px;
+  color: var(--accent);
+  font-size: 13px;
+}
+
+.action.tail {
+  color: var(--good);
+}
+
+.stack ol, .bindings, .env-frame { list-style: none; }
+.stack ol { margin: 0; padding: 0 8px 8px; }
+.stack button, .env button.frame {
+  width: 100%;
+  text-align: left;
+  display: flex;
+  justify-content: space-between;
+  gap: 8px;
+}
+.stack button { font-family: "IBM Plex Mono", ui-monospace, monospace; font-size: 12px; }
+.env-frame { padding: 0 6px; }
+.bindings { margin: 0 0 8px; padding: 0 8px 0 16px; }
+.bindings li {
+  display: flex;
+  gap: 8px;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+  padding: 2px 0;
+}
+.bindings code { color: var(--accent); }
+.empty, .placeholder { color: var(--muted); padding: 0 12px 8px; margin: 0; }
+.frame.open { background: rgba(228, 161, 90, 0.14); }
+
+.memory {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 14px;
+  padding: 0 12px 10px;
+  font-size: 12px;
+  color: var(--muted);
+}
+.memory strong, .panel header strong { color: var(--text); font-weight: 600; }
+
+.error {
+  margin: 0 12px 10px;
+  padding: 8px 10px;
+  border-radius: 8px;
+  background: rgba(224, 122, 95, 0.14);
+  color: #ffd0c4;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+
+.history {
+  display: grid;
+  grid-template-columns: auto minmax(120px, 180px) minmax(0, 1fr);
+  gap: 10px;
+  align-items: center;
+}
+.history > span {
+  color: var(--muted);
+  font-size: 11px;
+  letter-spacing: 0.12em;
+  text-transform: uppercase;
+}
+.history input[type='range'] { width: 100%; accent-color: var(--accent); }
+.history-list { display: flex; gap: 6px; overflow: auto; }
+.history-list button {
+  border-radius: 8px;
+  padding: 4px 8px;
+  font-size: 12px;
+  white-space: nowrap;
+}
+.history-list button.current { border-color: var(--accent); color: var(--accent); }
+
+@media (max-width: 980px) {
+  .app { height: auto; min-height: 100%; }
+  .workspace { grid-template-columns: 1fr; }
+  .pane { min-height: 420px; }
+  .top { flex-direction: column; align-items: stretch; }
+  .history { grid-template-columns: 1fr; }
+}
+
+.crash {
+  max-width: 640px;
+  margin: 12vh auto;
+  padding: 24px;
+  border: 1px solid var(--danger);
+  border-radius: 12px;
+}
+.crash h1 { margin: 0 0 8px; font-size: 22px; }
+.crash p { color: var(--danger); }
