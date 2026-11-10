@@ -1,0 +1,219 @@
+:root {
+  color-scheme: dark;
+  --bg: #1b1814;
+  --panel: #272119;
+  --panel-2: #322a20;
+  --line: #4d4336;
+  --text: #f4ead8;
+  --muted: #b5a790;
+  --accent: #e0a15a;
+  --accent-ink: #2a1c0c;
+  --danger: #d15b52;
+  --ok: #7dbaa6;
+  --shadow: 0 12px 32px rgba(0, 0, 0, 0.28);
+  font-family: "Avenir Next", "Segoe UI", "PingFang SC", "Hiragino Sans GB", "Noto Sans SC", sans-serif;
+}
+
+* { box-sizing: border-box; }
+
+html, body, #app { height: 100%; margin: 0; }
+html, body { overflow: hidden; }
+
+body {
+  background: var(--bg);
+  color: var(--text);
+}
+
+button, input { font: inherit; color: inherit; }
+
+button {
+  background: var(--panel-2);
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 8px;
+  cursor: pointer;
+}
+
+button:hover { border-color: var(--accent); }
+
+button:focus-visible, input:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+button[aria-pressed="true"] {
+  background: var(--accent);
+  color: var(--accent-ink);
+  border-color: var(--accent);
+}
+
+button:disabled { opacity: 0.45; cursor: default; }
+
+[hidden] { display: none !important; }
+
+h1, h2, h3 {
+  font-family: Palatino, "Palatino Linotype", "Iowan Old Style", "Songti SC", serif;
+  font-weight: 600;
+  margin: 0;
+}
+
+h1 { font-size: 20px; letter-spacing: 0.04em; }
+h2 { font-size: 15px; margin-bottom: 8px; }
+h3 { font-size: 14px; margin: 8px 0; }
+
+header {
+  display: flex;
+  flex: none;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 8px 14px;
+  padding: 6px 10px;
+  background: #221c16;
+  border-bottom: 1px solid var(--line);
+}
+
+.tabs, .physics, .toolbar, .layers { display: flex; flex-wrap: wrap; gap: 6px; align-items: center; }
+
+.physics { margin-left: auto; }
+.physics label, .layers label { display: flex; align-items: center; gap: 6px; font-size: 12px; color: var(--muted); }
+.physics input[type="range"] { width: 108px; accent-color: var(--accent); }
+.physics span { min-width: 2.5em; color: var(--text); }
+
+.view { flex: 1; min-height: 0; display: flex; }
+#app { display: flex; flex-direction: column; overflow: hidden; }
+
+.sidebar {
+  width: 196px;
+  flex: none;
+  background: var(--panel);
+  border-right: 1px solid var(--line);
+  padding: 10px;
+  overflow: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+}
+
+.props { border-right: 0; border-left: 1px solid var(--line); width: 210px; }
+
+.delete-confirm {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 8px;
+  border: 1px solid var(--danger);
+  border-radius: 8px;
+  background: #3a241f;
+}
+
+.delete-confirm p {
+  margin: 0;
+  color: #ffe8e2;
+  font-size: 12px;
+  line-height: 1.4;
+}
+
+.delete-confirm button { width: 100%; }
+
+#btn-delete-confirm {
+  background: var(--danger);
+  border-color: #8e2f2a;
+  color: #fff8f6;
+}
+
+.level-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; }
+.level-list button { text-align: left; width: 100%; }
+.level-list button small { display: block; color: var(--muted); font-size: 11px; }
+.level-list button[aria-current="true"] small { color: var(--accent-ink); }
+
+.hint { color: var(--muted); font-size: 12px; line-height: 1.45; margin: 0; }
+.warning { color: #ffb4a8; font-size: 12px; margin: 0; }
+
+.editor-center { flex: 1; min-width: 0; display: flex; flex-direction: column; min-height: 0; }
+.toolbar, .layers, .status { padding: 4px 8px; background: #221c16; }
+.toolbar { border-bottom: 1px solid var(--line); }
+.layers { border-bottom: 1px solid var(--line); }
+.status { border-top: 1px solid var(--line); font-size: 12px; color: var(--muted); min-height: 24px; }
+
+.stage { flex: 1; min-width: 0; min-height: 0; position: relative; background: #0e1214; }
+.editor-stage { flex: 1; }
+
+canvas { width: 100%; height: 100%; display: block; touch-action: none; }
+
+.hud {
+  position: absolute;
+  top: 8px;
+  left: 10px;
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px 12px;
+  padding: 6px 8px;
+  background: rgba(28, 22, 16, 0.78);
+  border-radius: 8px;
+  font-size: 13px;
+  pointer-events: none;
+}
+
+.stage-restart { position: absolute; top: 8px; right: 10px; }
+
+.banner {
+  background: var(--ok);
+  color: #10241e;
+  border-radius: 999px;
+  padding: 2px 8px;
+  font-size: 12px;
+}
+
+.overlay {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  align-content: center;
+  gap: 8px;
+  background: rgba(18, 14, 10, 0.55);
+  text-align: center;
+}
+
+.overlay h2 { font-size: 40px; }
+.overlay p { margin: 0 0 8px; max-width: 420px; }
+.overlay button { margin: 0 4px; padding: 8px 14px; }
+
+.stack, .pair label { display: flex; flex-direction: column; gap: 4px; font-size: 12px; color: var(--muted); }
+.pair { display: flex; gap: 8px; }
+.pair label { flex: 1; }
+input[type="text"], input[type="number"] {
+  background: #1a1612;
+  border: 1px solid var(--line);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+
+#toast {
+  position: fixed;
+  z-index: 30;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  max-width: min(680px, calc(100% - 24px));
+  max-height: 40vh;
+  overflow: auto;
+  white-space: pre-line;
+  background: #3a241f;
+  border: 1px solid var(--danger);
+  color: #ffe8e2;
+  padding: 10px 12px;
+  border-radius: 8px;
+  box-shadow: var(--shadow);
+}
+
+#toast.ok {
+  background: #1d3330;
+  border-color: var(--ok);
+  color: #e5fff6;
+}
+
+@media (max-width: 1100px) {
+  .sidebar, .props { width: 168px; }
+  .physics input[type="range"] { width: 84px; }
+}
