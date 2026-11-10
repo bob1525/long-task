@@ -1,0 +1,55 @@
+name: lisp-interpreter
+
+on:
+  pull_request:
+    paths:
+      - 'task-01-lisp-interpreter/**'
+      - '.github/workflows/lisp-interpreter.yml'
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    timeout-minutes: 20
+    defaults:
+      run:
+        working-directory: task-01-lisp-interpreter
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Node
+        uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: task-01-lisp-interpreter/package-lock.json
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Playwright Chromium
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npm run test:e2e
+
+      - name: Upload Playwright report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          if-no-files-found: ignore
+          retention-days: 14
+          path: |
+            task-01-lisp-interpreter/playwright-report/
+            task-01-lisp-interpreter/test-results/
+            task-01-lisp-interpreter/e2e-shots/
