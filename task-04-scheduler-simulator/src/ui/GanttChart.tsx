@@ -1,5 +1,5 @@
 import { useId } from 'react';
-import { colorForPid, toGanttSegments, type GanttSlice } from '../core';
+import { colorForPid, sliceSignature, toGanttSegments, type GanttSlice } from '../core';
 
 interface GanttChartProps {
   slices: readonly GanttSlice[];
@@ -31,6 +31,7 @@ export function GanttChart({
       {caption ? (
         <figcaption className="gantt-caption" data-testid={rootTestId === 'gantt' ? 'gantt-caption' : undefined}>
           {caption}
+          <span className="gantt-note">每一块都是核心输出的一次分派；同色块之间的间隙表示时间片结束后再次上场，不会并成一段。</span>
         </figcaption>
       ) : null}
       {segments.length === 0 ? (
@@ -62,11 +63,11 @@ export function GanttChart({
               />
             ))}
             {segments.map((segment) => {
-              const x = left + segment.start * unitPx + 2;
-              const barWidth = Math.max(4, (segment.end - segment.start) * unitPx - 4);
+              const x = left + segment.start * unitPx + 4;
+              const barWidth = Math.max(8, (segment.end - segment.start) * unitPx - 8);
               const idle = segment.pid === null;
               const fill = idle ? `url(#${patternId})` : colorForPid(segment.pid ?? 1);
-              const showRange = barWidth >= 68;
+              const showRange = barWidth >= 30;
               return (
                 <g
                   key={segment.index}
@@ -75,7 +76,7 @@ export function GanttChart({
                   data-start={segment.start}
                   data-end={segment.end}
                 >
-                  <rect x={x} y={top} width={barWidth} height={barHeight} rx="6" fill={fill} />
+                  <rect x={x} y={top} width={barWidth} height={barHeight} rx="6" fill={fill} stroke="#17211c" strokeWidth="1.25" />
                   <text
                     x={x + barWidth / 2}
                     y={top + (showRange ? 22 : 31)}
@@ -85,7 +86,12 @@ export function GanttChart({
                     {segment.label}
                   </text>
                   {showRange ? (
-                    <text x={x + barWidth / 2} y={top + 40} textAnchor="middle" className={idle ? 'gantt-range is-idle' : 'gantt-range'}>
+                    <text
+                      x={x + barWidth / 2}
+                      y={top + 40}
+                      textAnchor="middle"
+                      className={idle ? 'gantt-range is-idle' : barWidth < 68 ? 'gantt-range is-compact' : 'gantt-range'}
+                    >
                       {segment.start}–{segment.end}
                     </text>
                   ) : null}
@@ -116,6 +122,11 @@ export function GanttChart({
             </li>
           ) : null}
         </ul>
+      ) : null}
+      {segments.length > 0 ? (
+        <p className="gantt-signature" data-testid={`${rootTestId}-signature`}>
+          {sliceSignature(slices)}
+        </p>
       ) : null}
     </figure>
   );

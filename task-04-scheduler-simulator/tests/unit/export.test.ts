@@ -20,5 +20,40 @@ describe('导出', () => {
     expect(csv).toContain('slice,fcfs,1,');
     expect(csv).toContain('slice,fcfs,2,');
     expect(csv).toContain('summary,fcfs,');
+    expect(csv.split('\n')[0]?.split(',')).toEqual([
+      'record_type',
+      'algorithm',
+      'pid',
+      'arrival',
+      'burst',
+      'priority',
+      'completion',
+      'turnaround',
+      'waiting',
+      'response',
+      'io_time',
+      'slice_start',
+      'slice_end',
+      'makespan',
+      'cpu_utilization',
+    ]);
+    const summary = csv.split('\n').find((line) => line.startsWith('summary,'));
+    expect(summary?.split(',')).toEqual([
+      'summary',
+      'fcfs',
+      '',
+      '',
+      '',
+      '',
+      '',
+      '5.5',
+      '2.5',
+      '2.5',
+      '',
+      '',
+      '',
+      '6',
+      '1',
+    ]);
   });
 });

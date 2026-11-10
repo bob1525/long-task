@@ -111,7 +111,9 @@ export function CompareView({ processes, quantum, mlfqQuantums }: CompareViewPro
           导出对比 JSON
         </button>
       </div>
-      <p className="note">同一组进程分别从 t=0 独立跑完。高亮表示该列更优（等待、周转、响应更低，CPU 利用率更高）。</p>
+      <p className="note">
+        {`同一组进程分别从 t=0 独立跑完。RR 时间片 ${quantum}，MLFQ 时间片 ${mlfqQuantums.join('/')}。改过时间片后要重新生成。高亮表示该列更优（等待、周转、响应更低，CPU 利用率更高）。`}
+      </p>
       {error ? <p className="error">{error}</p> : null}
       {report ? (
         <>
@@ -160,7 +162,7 @@ export function CompareView({ processes, quantum, mlfqQuantums }: CompareViewPro
                 <article key={result.options.algorithm} className="compare-block">
                   <GanttChart
                     slices={result.slices}
-                    unitPx={28}
+                    unitPx={40}
                     rootTestId={`compare-gantt-${result.options.algorithm}`}
                     sliceTestId="compare-gantt-slice"
                     caption={info?.label ?? result.options.algorithm}

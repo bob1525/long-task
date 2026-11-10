@@ -5,6 +5,7 @@ import {
   RULES_SUMMARY,
   STATE_LABEL,
   SchedulerEngine,
+  colorForPid,
   formatHistory,
   formatNumber,
   formatPercent,
@@ -25,7 +26,7 @@ import { GanttChart } from './GanttChart';
 type Speed = 'slow' | 'normal' | 'fast';
 type Tab = 'sim' | 'compare';
 
-const SPEED_MS: Record<Speed, number> = { slow: 1200, normal: 450, fast: 90 };
+const SPEED_MS: Record<Speed, number> = { slow: 2000, normal: 800, fast: 120 };
 
 interface DraftRow {
   uid: string;
@@ -327,6 +328,22 @@ export function App() {
   const holding = snap?.holdingPid ?? null;
   const holdingProc = holding === null ? null : (snap?.processes.find((proc) => proc.pid === holding) ?? null);
   const runningLabel = !snap ? '尚未开始' : holding !== null ? `P${holding}` : '空闲';
+  const nextReady = snap?.readyQueue[0] ?? null;
+  const arrivingNow =
+    snap?.processes.filter((proc) => proc.state === 'new' && proc.arrivalTime === snap.currentTime) ?? [];
+  const cpuDetail = !snap
+    ? '尚未执行'
+    : holdingProc
+      ? `剩余 ${holdingProc.remainingTime} · 优先级 ${holdingProc.priority}`
+      : nextReady
+        ? `本拍已结束，CPU 已空出。下一步分派时队首是 P${nextReady.pid}。`
+        : arrivingNow.length > 0
+          ? `时刻 ${snap.currentTime} 到达 ${arrivingNow.map((proc) => `P${proc.pid}`).join('、')}，下一步才会入队并分派。`
+          : snap.waitingQueue.length > 0
+            ? 'CPU 空闲，就绪队列没有进程，有进程正在等待 I/O。'
+            : snap.finished
+              ? '没有待运行的进程。'
+              : 'CPU 空闲。';
   const specs = rows.map(specFromRow);
 
   return (
@@ -473,21 +490,16 @@ export function App() {
           ) : null}
           {snap?.finished ? <p className="done-banner">全部进程已完成。可以导出、切换算法，或在下方继续添加进程。</p> : null}
 
+          <div data-testid="stage">
           <GanttChart slices={snap?.slices ?? []} caption={caption} />
 
           <section className="status-grid">
-            <article className="card">
+            <article className="card run-card" style={holding !== null ? { borderColor: colorForPid(holding) } : undefined}>
               <p className="kicker">当前运行进程</p>
               <p className="run-pid" data-testid="running-process" data-holding={holding ?? 'idle'}>
                 {runningLabel}
               </p>
-              <p data-testid="cpu-holding">
-                {holdingProc
-                  ? `剩余 ${holdingProc.remainingTime} · 优先级 ${holdingProc.priority}`
-                  : snap
-                    ? 'CPU 空闲。时间片边界或完成后，进程会先离开 CPU，再在下一步分派。'
-                    : '尚未执行'}
-              </p>
+              <p data-testid="cpu-holding">{cpuDetail}</p>
               {snap?.lastInterval ? (
                 <p className="subtle">
                   上一段 [{snap.lastInterval.start}, {snap.lastInterval.end}){' '}
@@ -531,7 +543,19 @@ export function App() {
                   )}
                 </div>
               )}
-              <p className="subtle">队首是下一次 CPU 空闲时会先考虑的进程。SJF / 优先级按比较器排序显示。</p>
+              <div className="wait-row" data-testid="waiting-queue">
+                <span className="kicker">等待（I/O）</span>
+                {(snap?.waitingQueue.length ?? 0) === 0 ? (
+                  <em data-testid="waiting-empty">无</em>
+                ) : (
+                  snap?.waitingQueue.map((pid) => (
+                    <span key={pid} className="chip is-waiting" data-testid="waiting-pid" data-pid={pid}>
+                      P{pid}
+                    </span>
+                  ))
+                )}
+              </div>
+              <p className="subtle">队首是下一次 CPU 空闲时会先考虑的进程。SJF / 优先级按比较器排序显示。等待是 I/O 阻塞，不在就绪队列里。</p>
             </article>
             <article className="card">
               <p className="kicker">实时指标</p>
@@ -560,6 +584,7 @@ export function App() {
               </ul>
             </article>
           </section>
+          </div>
 
           <section className="split">
             <div>

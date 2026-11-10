@@ -29,6 +29,7 @@ export function resultToCsv(result: SimulationResult): string {
     'io_time',
     'slice_start',
     'slice_end',
+    'makespan',
     'cpu_utilization',
   ];
   const lines = [header.join(',')];
@@ -47,6 +48,7 @@ export function resultToCsv(result: SimulationResult): string {
         proc.waitingTime,
         proc.responseTime,
         proc.ioTime,
+        '',
         '',
         '',
         '',
@@ -72,6 +74,7 @@ export function resultToCsv(result: SimulationResult): string {
         slice.start,
         slice.end,
         '',
+        '',
       ]
         .map(csvCell)
         .join(','),
@@ -89,6 +92,7 @@ export function resultToCsv(result: SimulationResult): string {
       result.averages.turnaround,
       result.averages.waiting,
       result.averages.response,
+      '',
       '',
       '',
       result.makespan,

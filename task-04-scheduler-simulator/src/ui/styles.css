@@ -169,7 +169,9 @@ input[type="number"], input:not([type="radio"]):not([type="checkbox"]) {
 
 .gantt-card { padding: 14px 14px 10px; }
 
-.gantt-caption { font-weight: 700; margin-bottom: 8px; }
+.gantt-caption { font-weight: 700; margin-bottom: 8px; display: flex; flex-direction: column; gap: 4px; }
+.gantt-note { font-weight: 400; color: var(--muted); font-size: 0.82rem; }
+.run-card { border-width: 2px; }
 
 .gantt-scroll { overflow-x: auto; }
 
@@ -180,6 +182,7 @@ input[type="number"], input:not([type="radio"]):not([type="checkbox"]) {
 .gantt-label.is-idle { fill: #243029; }
 
 .gantt-range { fill: rgba(255, 255, 255, 0.88); font-size: 11px; }
+.gantt-range.is-compact { font-size: 9px; }
 
 .gantt-range.is-idle { fill: #4d5b53; }
 
@@ -199,6 +202,17 @@ input[type="number"], input:not([type="radio"]):not([type="checkbox"]) {
 .legend-idle {
   background: repeating-linear-gradient(135deg, #e7e0d4, #e7e0d4 4px, #8d8476 4px, #8d8476 6px);
 }
+
+.gantt-signature {
+  margin: 8px 0 0;
+  font-family: "Noto Sans Mono CJK SC", "Noto Sans Mono CJK TC", ui-monospace, monospace;
+  font-size: 0.82rem;
+  line-height: 1.45;
+  overflow-wrap: anywhere;
+}
+
+.wait-row { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-top: 8px; }
+.chip.is-waiting { border-color: #7a4ea3; color: #5d3a80; }
 
 .status-grid, .split {
   display: grid;
