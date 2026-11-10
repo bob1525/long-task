@@ -1,0 +1,580 @@
+{
+  "cases": [
+    {
+      "id": "A",
+      "title": "错开到达",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 7, "priority": 2 },
+        { "pid": 2, "arrivalTime": 2, "burstTime": 4, "priority": 1 },
+        { "pid": 3, "arrivalTime": 4, "burstTime": 1, "priority": 3 },
+        { "pid": 4, "arrivalTime": 5, "burstTime": 4, "priority": 2 }
+      ],
+      "runs": [
+        {
+          "algorithm": "fcfs",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 7 },
+            { "pid": 2, "start": 7, "end": 11 },
+            { "pid": 3, "start": 11, "end": 12 },
+            { "pid": 4, "start": 12, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 7, "turnaroundTime": 7, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 11, "turnaroundTime": 9, "waitingTime": 5, "responseTime": 5 },
+            { "pid": 3, "completionTime": 12, "turnaroundTime": 8, "waitingTime": 7, "responseTime": 7 },
+            { "pid": 4, "completionTime": 16, "turnaroundTime": 11, "waitingTime": 7, "responseTime": 7 }
+          ]
+        },
+        {
+          "algorithm": "sjf",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 7 },
+            { "pid": 3, "start": 7, "end": 8 },
+            { "pid": 2, "start": 8, "end": 12 },
+            { "pid": 4, "start": 12, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 7, "turnaroundTime": 7, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 12, "turnaroundTime": 10, "waitingTime": 6, "responseTime": 6 },
+            { "pid": 3, "completionTime": 8, "turnaroundTime": 4, "waitingTime": 3, "responseTime": 3 },
+            { "pid": 4, "completionTime": 16, "turnaroundTime": 11, "waitingTime": 7, "responseTime": 7 }
+          ]
+        },
+        {
+          "algorithm": "srtf",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 4 },
+            { "pid": 3, "start": 4, "end": 5 },
+            { "pid": 2, "start": 5, "end": 7 },
+            { "pid": 4, "start": 7, "end": 11 },
+            { "pid": 1, "start": 11, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 16, "turnaroundTime": 16, "waitingTime": 9, "responseTime": 0 },
+            { "pid": 2, "completionTime": 7, "turnaroundTime": 5, "waitingTime": 1, "responseTime": 0 },
+            { "pid": 3, "completionTime": 5, "turnaroundTime": 1, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 4, "completionTime": 11, "turnaroundTime": 6, "waitingTime": 2, "responseTime": 2 }
+          ]
+        },
+        {
+          "algorithm": "rr",
+          "quantum": 2,
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 1, "start": 2, "end": 4 },
+            { "pid": 2, "start": 4, "end": 6 },
+            { "pid": 1, "start": 6, "end": 8 },
+            { "pid": 3, "start": 8, "end": 9 },
+            { "pid": 4, "start": 9, "end": 11 },
+            { "pid": 2, "start": 11, "end": 13 },
+            { "pid": 1, "start": 13, "end": 14 },
+            { "pid": 4, "start": 14, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 14, "turnaroundTime": 14, "waitingTime": 7, "responseTime": 0 },
+            { "pid": 2, "completionTime": 13, "turnaroundTime": 11, "waitingTime": 7, "responseTime": 2 },
+            { "pid": 3, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 4, "responseTime": 4 },
+            { "pid": 4, "completionTime": 16, "turnaroundTime": 11, "waitingTime": 7, "responseTime": 4 }
+          ]
+        },
+        {
+          "algorithm": "priority-np",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 7 },
+            { "pid": 2, "start": 7, "end": 11 },
+            { "pid": 4, "start": 11, "end": 15 },
+            { "pid": 3, "start": 15, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 7, "turnaroundTime": 7, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 11, "turnaroundTime": 9, "waitingTime": 5, "responseTime": 5 },
+            { "pid": 3, "completionTime": 16, "turnaroundTime": 12, "waitingTime": 11, "responseTime": 11 },
+            { "pid": 4, "completionTime": 15, "turnaroundTime": 10, "waitingTime": 6, "responseTime": 6 }
+          ]
+        },
+        {
+          "algorithm": "priority-p",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 6 },
+            { "pid": 1, "start": 6, "end": 11 },
+            { "pid": 4, "start": 11, "end": 15 },
+            { "pid": 3, "start": 15, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 11, "turnaroundTime": 11, "waitingTime": 4, "responseTime": 0 },
+            { "pid": 2, "completionTime": 6, "turnaroundTime": 4, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 3, "completionTime": 16, "turnaroundTime": 12, "waitingTime": 11, "responseTime": 11 },
+            { "pid": 4, "completionTime": 15, "turnaroundTime": 10, "waitingTime": 6, "responseTime": 6 }
+          ]
+        },
+        {
+          "algorithm": "mlfq",
+          "mlfqQuantums": [2, 4, 8],
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 4 },
+            { "pid": 3, "start": 4, "end": 5 },
+            { "pid": 4, "start": 5, "end": 7 },
+            { "pid": 1, "start": 7, "end": 11 },
+            { "pid": 2, "start": 11, "end": 13 },
+            { "pid": 4, "start": 13, "end": 15 },
+            { "pid": 1, "start": 15, "end": 16 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 16, "turnaroundTime": 16, "waitingTime": 9, "responseTime": 0 },
+            { "pid": 2, "completionTime": 13, "turnaroundTime": 11, "waitingTime": 7, "responseTime": 0 },
+            { "pid": 3, "completionTime": 5, "turnaroundTime": 1, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 4, "completionTime": 15, "turnaroundTime": 10, "waitingTime": 6, "responseTime": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "B",
+      "title": "同时到达",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 4, "priority": 2 },
+        { "pid": 2, "arrivalTime": 0, "burstTime": 6, "priority": 1 },
+        { "pid": 3, "arrivalTime": 0, "burstTime": 2, "priority": 3 },
+        { "pid": 4, "arrivalTime": 0, "burstTime": 6, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "fcfs",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 4 },
+            { "pid": 2, "start": 4, "end": 10 },
+            { "pid": 3, "start": 10, "end": 12 },
+            { "pid": 4, "start": 12, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 4, "turnaroundTime": 4, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 10, "turnaroundTime": 10, "waitingTime": 4, "responseTime": 4 },
+            { "pid": 3, "completionTime": 12, "turnaroundTime": 12, "waitingTime": 10, "responseTime": 10 },
+            { "pid": 4, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 12, "responseTime": 12 }
+          ]
+        },
+        {
+          "algorithm": "sjf",
+          "slices": [
+            { "pid": 3, "start": 0, "end": 2 },
+            { "pid": 1, "start": 2, "end": 6 },
+            { "pid": 2, "start": 6, "end": 12 },
+            { "pid": 4, "start": 12, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 2, "responseTime": 2 },
+            { "pid": 2, "completionTime": 12, "turnaroundTime": 12, "waitingTime": 6, "responseTime": 6 },
+            { "pid": 3, "completionTime": 2, "turnaroundTime": 2, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 4, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 12, "responseTime": 12 }
+          ]
+        },
+        {
+          "algorithm": "srtf",
+          "slices": [
+            { "pid": 3, "start": 0, "end": 2 },
+            { "pid": 1, "start": 2, "end": 6 },
+            { "pid": 2, "start": 6, "end": 12 },
+            { "pid": 4, "start": 12, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 2, "responseTime": 2 },
+            { "pid": 2, "completionTime": 12, "turnaroundTime": 12, "waitingTime": 6, "responseTime": 6 },
+            { "pid": 3, "completionTime": 2, "turnaroundTime": 2, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 4, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 12, "responseTime": 12 }
+          ]
+        },
+        {
+          "algorithm": "rr",
+          "quantum": 2,
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 4 },
+            { "pid": 3, "start": 4, "end": 6 },
+            { "pid": 4, "start": 6, "end": 8 },
+            { "pid": 1, "start": 8, "end": 10 },
+            { "pid": 2, "start": 10, "end": 12 },
+            { "pid": 4, "start": 12, "end": 14 },
+            { "pid": 2, "start": 14, "end": 16 },
+            { "pid": 4, "start": 16, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 10, "turnaroundTime": 10, "waitingTime": 6, "responseTime": 0 },
+            { "pid": 2, "completionTime": 16, "turnaroundTime": 16, "waitingTime": 10, "responseTime": 2 },
+            { "pid": 3, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 4, "responseTime": 4 },
+            { "pid": 4, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 12, "responseTime": 6 }
+          ]
+        },
+        {
+          "algorithm": "priority-np",
+          "slices": [
+            { "pid": 2, "start": 0, "end": 6 },
+            { "pid": 4, "start": 6, "end": 12 },
+            { "pid": 1, "start": 12, "end": 16 },
+            { "pid": 3, "start": 16, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 16, "turnaroundTime": 16, "waitingTime": 12, "responseTime": 12 },
+            { "pid": 2, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 3, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 16, "responseTime": 16 },
+            { "pid": 4, "completionTime": 12, "turnaroundTime": 12, "waitingTime": 6, "responseTime": 6 }
+          ]
+        },
+        {
+          "algorithm": "priority-p",
+          "slices": [
+            { "pid": 2, "start": 0, "end": 6 },
+            { "pid": 4, "start": 6, "end": 12 },
+            { "pid": 1, "start": 12, "end": 16 },
+            { "pid": 3, "start": 16, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 16, "turnaroundTime": 16, "waitingTime": 12, "responseTime": 12 },
+            { "pid": 2, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 3, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 16, "responseTime": 16 },
+            { "pid": 4, "completionTime": 12, "turnaroundTime": 12, "waitingTime": 6, "responseTime": 6 }
+          ]
+        },
+        {
+          "algorithm": "mlfq",
+          "mlfqQuantums": [2, 4, 8],
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 4 },
+            { "pid": 3, "start": 4, "end": 6 },
+            { "pid": 4, "start": 6, "end": 8 },
+            { "pid": 1, "start": 8, "end": 10 },
+            { "pid": 2, "start": 10, "end": 14 },
+            { "pid": 4, "start": 14, "end": 18 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 10, "turnaroundTime": 10, "waitingTime": 6, "responseTime": 0 },
+            { "pid": 2, "completionTime": 14, "turnaroundTime": 14, "waitingTime": 8, "responseTime": 2 },
+            { "pid": 3, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 4, "responseTime": 4 },
+            { "pid": 4, "completionTime": 18, "turnaroundTime": 18, "waitingTime": 12, "responseTime": 6 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "C",
+      "title": "单个进程",
+      "processes": [{ "pid": 1, "arrivalTime": 4, "burstTime": 5, "priority": 2 }],
+      "runs": [
+        {
+          "algorithm": "fcfs",
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        },
+        {
+          "algorithm": "sjf",
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        },
+        {
+          "algorithm": "srtf",
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        },
+        {
+          "algorithm": "rr",
+          "quantum": 2,
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 6 },
+            { "pid": 1, "start": 6, "end": 8 },
+            { "pid": 1, "start": 8, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        },
+        {
+          "algorithm": "priority-np",
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        },
+        {
+          "algorithm": "priority-p",
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        },
+        {
+          "algorithm": "mlfq",
+          "mlfqQuantums": [2, 4, 8],
+          "slices": [
+            { "pid": null, "start": 0, "end": 4 },
+            { "pid": 1, "start": 4, "end": 6 },
+            { "pid": 1, "start": 6, "end": 9 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 9, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 }
+          ]
+        }
+      ]
+    }
+  ],
+  "edges": [
+    {
+      "id": "Q1",
+      "title": "时间片为 1",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 3, "priority": 1 },
+        { "pid": 2, "arrivalTime": 0, "burstTime": 2, "priority": 1 },
+        { "pid": 3, "arrivalTime": 1, "burstTime": 2, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "rr",
+          "quantum": 1,
+          "slices": [
+            { "pid": 1, "start": 0, "end": 1 },
+            { "pid": 2, "start": 1, "end": 2 },
+            { "pid": 1, "start": 2, "end": 3 },
+            { "pid": 3, "start": 3, "end": 4 },
+            { "pid": 2, "start": 4, "end": 5 },
+            { "pid": 1, "start": 5, "end": 6 },
+            { "pid": 3, "start": 6, "end": 7 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 3, "responseTime": 0 },
+            { "pid": 2, "completionTime": 5, "turnaroundTime": 5, "waitingTime": 3, "responseTime": 1 },
+            { "pid": 3, "completionTime": 7, "turnaroundTime": 6, "waitingTime": 4, "responseTime": 2 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SRTF-TIE",
+      "title": "剩余时间相等不抢占",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 4, "priority": 1 },
+        { "pid": 2, "arrivalTime": 2, "burstTime": 2, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "srtf",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 4 },
+            { "pid": 2, "start": 4, "end": 6 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 4, "turnaroundTime": 4, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 6, "turnaroundTime": 4, "waitingTime": 2, "responseTime": 2 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SRTF-PREEMPT",
+      "title": "剩余时间严格更短才抢占",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 4, "priority": 1 },
+        { "pid": 2, "arrivalTime": 2, "burstTime": 1, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "srtf",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 3 },
+            { "pid": 1, "start": 3, "end": 5 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 5, "turnaroundTime": 5, "waitingTime": 1, "responseTime": 0 },
+            { "pid": 2, "completionTime": 3, "turnaroundTime": 1, "waitingTime": 0, "responseTime": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PRI-TIE",
+      "title": "优先级相等不抢占",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 5, "priority": 2 },
+        { "pid": 2, "arrivalTime": 1, "burstTime": 1, "priority": 2 }
+      ],
+      "runs": [
+        {
+          "algorithm": "priority-p",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 5 },
+            { "pid": 2, "start": 5, "end": 6 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 5, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 6, "turnaroundTime": 5, "waitingTime": 4, "responseTime": 4 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "PRI-PREEMPT",
+      "title": "优先级数值严格更小才抢占",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 5, "priority": 2 },
+        { "pid": 2, "arrivalTime": 1, "burstTime": 1, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "priority-p",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 1 },
+            { "pid": 2, "start": 1, "end": 2 },
+            { "pid": 1, "start": 2, "end": 6 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 1, "responseTime": 0 },
+            { "pid": 2, "completionTime": 2, "turnaroundTime": 1, "waitingTime": 0, "responseTime": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SJF-ARRIVAL",
+      "title": "SJF 平局先到者优先于更小 PID",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 4, "priority": 1 },
+        { "pid": 2, "arrivalTime": 2, "burstTime": 3, "priority": 1 },
+        { "pid": 3, "arrivalTime": 1, "burstTime": 3, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "sjf",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 4 },
+            { "pid": 3, "start": 4, "end": 7 },
+            { "pid": 2, "start": 7, "end": 10 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 4, "turnaroundTime": 4, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 10, "turnaroundTime": 8, "waitingTime": 5, "responseTime": 5 },
+            { "pid": 3, "completionTime": 7, "turnaroundTime": 6, "waitingTime": 3, "responseTime": 3 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "SJF-PID",
+      "title": "SJF 到达时间也相同则 PID 升序",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 4, "priority": 1 },
+        { "pid": 2, "arrivalTime": 1, "burstTime": 3, "priority": 1 },
+        { "pid": 3, "arrivalTime": 1, "burstTime": 3, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "sjf",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 4 },
+            { "pid": 2, "start": 4, "end": 7 },
+            { "pid": 3, "start": 7, "end": 10 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 4, "turnaroundTime": 4, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 7, "turnaroundTime": 6, "waitingTime": 3, "responseTime": 3 },
+            { "pid": 3, "completionTime": 10, "turnaroundTime": 9, "waitingTime": 6, "responseTime": 6 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "FCFS-PID",
+      "title": "FCFS 忽略更短服务时间和更高优先级",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 5, "priority": 5 },
+        { "pid": 2, "arrivalTime": 0, "burstTime": 1, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "fcfs",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 5 },
+            { "pid": 2, "start": 5, "end": 6 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 5, "turnaroundTime": 5, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 6, "turnaroundTime": 6, "waitingTime": 5, "responseTime": 5 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "IDLE-GAP",
+      "title": "到达前的空闲不算等待",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 2, "priority": 1 },
+        { "pid": 2, "arrivalTime": 5, "burstTime": 2, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "fcfs",
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": null, "start": 2, "end": 5 },
+            { "pid": 2, "start": 5, "end": 7 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 2, "turnaroundTime": 2, "waitingTime": 0, "responseTime": 0 },
+            { "pid": 2, "completionTime": 7, "turnaroundTime": 2, "waitingTime": 0, "responseTime": 0 }
+          ]
+        }
+      ]
+    },
+    {
+      "id": "MLFQ-FRONT",
+      "title": "被更高队列抢占后回到本队队首并保留剩余时间片",
+      "processes": [
+        { "pid": 1, "arrivalTime": 0, "burstTime": 6, "priority": 1 },
+        { "pid": 2, "arrivalTime": 0, "burstTime": 4, "priority": 1 },
+        { "pid": 3, "arrivalTime": 5, "burstTime": 2, "priority": 1 }
+      ],
+      "runs": [
+        {
+          "algorithm": "mlfq",
+          "mlfqQuantums": [2, 4, 8],
+          "slices": [
+            { "pid": 1, "start": 0, "end": 2 },
+            { "pid": 2, "start": 2, "end": 4 },
+            { "pid": 1, "start": 4, "end": 5 },
+            { "pid": 3, "start": 5, "end": 7 },
+            { "pid": 1, "start": 7, "end": 10 },
+            { "pid": 2, "start": 10, "end": 12 }
+          ],
+          "results": [
+            { "pid": 1, "completionTime": 10, "turnaroundTime": 10, "waitingTime": 4, "responseTime": 0 },
+            { "pid": 2, "completionTime": 12, "turnaroundTime": 12, "waitingTime": 8, "responseTime": 2 },
+            { "pid": 3, "completionTime": 7, "turnaroundTime": 2, "waitingTime": 0, "responseTime": 0 }
+          ]
+        }
+      ]
+    }
+  ]
+}
