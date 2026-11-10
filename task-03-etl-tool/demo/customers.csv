@@ -1,0 +1,14 @@
+id,full_name,email,age,street,city,zip,price,qty,status,notes
+1,  Ada Lovelace ,ADA@EXAMPLE.COM,36,12 King St,London,SW1A,10.5,3,active,  hello  
+2,Alan Turing,alan@example.com,41,5 Bombe Rd,Manchester,M1,20,2,active,keeper
+3,Grace Hopper,grace@example.com,85,1 Compiler Ave,New York,10001,15,4,active, pioneer 
+4,Bad Cast,bad@example.com,not_a_number,1 Rue,Paris,75001,10,1,active,bad-age
+5,Zero Qty,zero@example.com,20,2 Str,Berlin,10115,10,0,active,div-zero
+6,Empty Mail,   ,30,3 Via,Rome,00100,5,2,active,spaced-email
+7,Skip Me,skip@example.com,10,4 St,Oslo,0150,9,1,ignore,filtered-out
+8,Prince,prince@example.com,50,6 Calle,Madrid,28001,8,2,active,single-name
+9,Neg Price,neg@example.com,33,7 Rua,Lisbon,1100,-5,2,active,negative
+10,Word Age,word@example.com,twenty,8 Road,Dublin,D02,12.5,2,active,bad-age-word
+11,Eve Extra Names,eve@example.com,29,9 Gasse,Vienna,1010,30,4,active,three-parts
+12,High Value,high@example.com,45,10 Ulice,Prague,11000,200,5,active,gold-tier
+1,Dup Key,dup@example.com,40,11 Lane,Austin,78701,9,2,active,duplicate-id
