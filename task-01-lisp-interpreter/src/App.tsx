@@ -42,7 +42,7 @@ export function App() {
   const [source, setSource] = useState(initial.source);
   const [exampleId, setExampleId] = useState(initial.id);
   const [snap, setSnap] = useState<Snapshot>(sessionRef.current.snapshot);
-  const [meta, setMeta] = useState({ index: 0, length: 1 });
+  const [meta, setMeta] = useState({ index: 0, length: 1, dropped: 0 });
   const [dirty, setDirty] = useState(false);
   const [running, setRunning] = useState(false);
   const [pinnedId, setPinnedId] = useState<number | null>(null);
@@ -51,7 +51,7 @@ export function App() {
   function publish(): void {
     const session = sessionRef.current;
     setSnap(session.snapshot);
-    setMeta({ index: session.cursor, length: session.history.length });
+    setMeta({ index: session.cursor, length: session.history.length, dropped: session.droppedSteps });
   }
 
   function onEdit(text: string): void {
@@ -253,7 +253,13 @@ export function App() {
             </p>
             <pre data-testid="current-expr">{snap.currentExpr ?? snap.valuePreview ?? '—'}</pre>
             {snap.error && (
-              <p className="error" data-testid="error" role="alert">
+              <p
+                className="error"
+                data-testid="error"
+                data-line={snap.error.line ?? ''}
+                data-column={snap.error.column ?? ''}
+                role="alert"
+              >
                 {snap.error.text}
               </p>
             )}
@@ -307,7 +313,18 @@ export function App() {
                         {frame.bindings.map((binding) => (
                           <li key={binding.name}>
                             <code>{binding.name}</code>
-                            <span>= {binding.value}</span>
+                            {binding.capturedEnvId !== null ? (
+                              <button
+                                type="button"
+                                className="proc"
+                                data-testid={`proc-${binding.name}`}
+                                onClick={() => setPinnedId(binding.capturedEnvId)}
+                              >
+                                = {binding.value}
+                              </button>
+                            ) : (
+                              <span>= {binding.value}</span>
+                            )}
                           </li>
                         ))}
                       </ul>
@@ -315,6 +332,29 @@ export function App() {
                   </div>
                 );
               })}
+            </div>
+            <div className="live" data-testid="live-frames">
+              <p className="live-title">所有存活帧</p>
+              {snap.frames.map((frame) => (
+                <button
+                  key={frame.id}
+                  type="button"
+                  className={frame.id === selectedId ? 'frame open' : 'frame'}
+                  data-testid="live-frame"
+                  data-live-label={frame.label}
+                  onClick={() => setPinnedId(frame.id)}
+                >
+                  <span>{frame.label}</span>
+                  <span>
+                    {frame.bindings.length === 0
+                      ? '（无绑定）'
+                      : frame.bindings
+                          .slice(0, 4)
+                          .map((binding) => `${binding.name}=${binding.value}`)
+                          .join(' ')}
+                  </span>
+                </button>
+              ))}
             </div>
           </article>
 
@@ -359,6 +399,7 @@ export function App() {
       </main>
 
       <footer className="history">
+        <div className="history-bar">
         <span>执行历史</span>
         <input
           data-testid="history-slider"
@@ -389,6 +430,12 @@ export function App() {
             );
           })}
         </div>
+        </div>
+        {meta.dropped > 0 && (
+          <p className="history-note" data-testid="history-note">
+            更早的步骤已丢弃，只保留最近 {sessionRef.current.maxHistory} 步（已丢弃 {meta.dropped} 步）。
+          </p>
+        )}
       </footer>
     </div>
   );

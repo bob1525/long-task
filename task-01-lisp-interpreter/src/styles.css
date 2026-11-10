@@ -193,10 +193,24 @@ pre {
 .bindings li {
   display: flex;
   gap: 8px;
+  align-items: baseline;
   font-family: "IBM Plex Mono", ui-monospace, monospace;
   font-size: 12px;
   padding: 2px 0;
 }
+button.proc {
+  background: transparent;
+  border: 0;
+  border-radius: 6px;
+  padding: 0 4px;
+  color: var(--accent);
+  text-decoration: underline;
+  font-family: "IBM Plex Mono", ui-monospace, monospace;
+  font-size: 12px;
+}
+.live { display: flex; flex-direction: column; gap: 4px; padding: 0 8px 10px; }
+.live-title { margin: 8px 0 0; color: var(--muted); font-size: 11px; letter-spacing: 0.12em; text-transform: uppercase; }
+.live button.frame { font-size: 12px; }
 .bindings code { color: var(--accent); }
 .empty, .placeholder { color: var(--muted); padding: 0 12px 8px; margin: 0; }
 .frame.open { background: rgba(228, 161, 90, 0.14); }
@@ -221,13 +235,15 @@ pre {
   font-size: 12px;
 }
 
-.history {
+.history { display: flex; flex-direction: column; gap: 6px; }
+.history-bar {
   display: grid;
   grid-template-columns: auto minmax(120px, 180px) minmax(0, 1fr);
   gap: 10px;
   align-items: center;
 }
-.history > span {
+.history-note { margin: 0; color: var(--accent); font-size: 12px; }
+.history-bar > span {
   color: var(--muted);
   font-size: 11px;
   letter-spacing: 0.12em;
@@ -248,7 +264,7 @@ pre {
   .workspace { grid-template-columns: 1fr; }
   .pane { min-height: 420px; }
   .top { flex-direction: column; align-items: stretch; }
-  .history { grid-template-columns: 1fr; }
+  .history-bar { grid-template-columns: 1fr; }
 }
 
 .crash {

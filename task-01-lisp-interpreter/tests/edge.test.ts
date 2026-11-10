@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest';
-import { execute } from '../src/lisp/index';
+import { MAX_CALL_STACK, execute } from '../src/lisp/index';
 import { expectValue } from './helpers';
 
 describe('边界', () => {
@@ -101,5 +101,27 @@ describe('边界', () => {
     expect(result.error?.kind).toBe('runtime');
     expect(result.error?.detail).toContain('最大求值步数');
     expect(result.maxCallStack).toBe(1);
+  });
+
+  it('尾递归死循环的步数错误指向循环调用', () => {
+    const started = Date.now();
+    const result = execute('(define (f)\n  (f))\n(f)', { maxSteps: 2_000 });
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.ok).toBe(false);
+    expect(result.error?.kind).toBe('runtime');
+    expect(result.error?.detail).toContain('最大求值步数');
+    expect(result.error).toMatchObject({ line: 2, column: 3 });
+    expect(result.maxCallStack).toBe(1);
+  });
+
+  it('非尾失控递归在栈深上限处停止，并指向递归调用', () => {
+    const started = Date.now();
+    const result = execute('(define (g)\n  (+ 1 (g)))\n(g)');
+    expect(Date.now() - started).toBeLessThan(5_000);
+    expect(result.ok).toBe(false);
+    expect(result.error?.kind).toBe('runtime');
+    expect(result.error?.detail).toContain(`非尾调用栈深度超过上限 ${MAX_CALL_STACK}`);
+    expect(result.error).toMatchObject({ line: 2, column: 8 });
+    expect(result.maxCallStack).toBe(MAX_CALL_STACK);
   });
 });

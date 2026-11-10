@@ -77,11 +77,17 @@ export interface Env {
   extend(label: string): Env;
 }
 
+export interface BindingSnapshot {
+  name: string;
+  value: string;
+  capturedEnvId: number | null;
+}
+
 export interface EnvFrameSnapshot {
   id: number;
   label: string;
   parentId: number | null;
-  bindings: Array<{ name: string; value: string }>;
+  bindings: BindingSnapshot[];
 }
 
 export interface CallFrameSnapshot {

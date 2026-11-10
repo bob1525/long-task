@@ -1,5 +1,6 @@
 import { envChain } from './env';
 import { asLispError, LispError, serializeError } from './error';
+import { MAX_CALL_STACK } from './limits';
 import { parseParamList, toProperList } from './params';
 import { buildTranscript, previewValue, printSExpr, printValue } from './print';
 import type { Env, Snapshot, SourceSpan, SExpr, Value, World } from './types';
@@ -104,7 +105,7 @@ export class Machine {
 
   forceError(error: LispError): void {
     this.control = { tag: 'error', error };
-    this.action = '可视化步数达到上限';
+    this.action = '已停止';
     if (error.span) this.currentSpan = error.span;
   }
 
@@ -140,6 +141,48 @@ export class Machine {
     }
   }
 
+  private liveEnvironments(): Env[] {
+    const envs = new Map<number, Env>();
+    const envQueue: Env[] = [];
+    const values: Value[] = [];
+    const seenPairs = new Set<number>();
+    const seenProcs = new Set<number>();
+
+    const pushEnv = (env: Env | null): void => {
+      let current = env;
+      while (current && !envs.has(current.id)) {
+        envs.set(current.id, current);
+        envQueue.push(current);
+        current = current.parent;
+      }
+    };
+
+    pushEnv(this.currentEnv);
+    for (const frame of this.callStack) pushEnv(frame.env);
+
+    while (envQueue.length > 0 || values.length > 0) {
+      while (values.length > 0) {
+        const value = values.pop();
+        if (!value) break;
+        if (value.kind === 'pair') {
+          if (seenPairs.has(value.id)) continue;
+          seenPairs.add(value.id);
+          values.push(value.car, value.cdr);
+          continue;
+        }
+        if (value.kind === 'procedure') {
+          if (seenProcs.has(value.id)) continue;
+          seenProcs.add(value.id);
+          pushEnv(value.env);
+        }
+      }
+      const env = envQueue.pop();
+      if (!env) continue;
+      for (const [, value] of env.entries()) values.push(value);
+    }
+    return [...envs.values()];
+  }
+
   toSnapshot(): Snapshot {
     const error = this.error;
     const status = error ? 'error' : this.control.tag === 'done' ? 'done' : this.steps === 0 ? 'ready' : 'running';
@@ -152,18 +195,7 @@ export class Machine {
       valuePreview = previewValue(this.control.value, 160);
     }
 
-    const frameMap = new Map<number, Env>();
-    const remember = (env: Env | null): void => {
-      let current = env;
-      const seen = new Set<number>();
-      while (current && !seen.has(current.id)) {
-        seen.add(current.id);
-        frameMap.set(current.id, current);
-        current = current.parent;
-      }
-    };
-    remember(this.currentEnv);
-    for (const frame of this.callStack) remember(frame.env);
+    const liveEnvs = this.liveEnvironments();
 
     const output = this.world.output.join('');
     const results = this.world.results.slice();
@@ -181,11 +213,15 @@ export class Machine {
         envId: frame.env.id,
         span: frame.span,
       })),
-      frames: [...frameMap.values()].map((env) => ({
+      frames: liveEnvs.map((env) => ({
         id: env.id,
         label: env.label,
         parentId: env.parent?.id ?? null,
-        bindings: env.entries().map(([name, value]) => ({ name, value: previewValue(value) })),
+        bindings: env.entries().map(([name, value]) => ({
+          name,
+          value: previewValue(value),
+          capturedEnvId: value.kind === 'procedure' ? value.env.id : null,
+        })),
       })),
       activeEnvId: this.currentEnv.id,
       output,
@@ -785,6 +821,13 @@ export class Machine {
       this.action = `尾调用 ${frame.name}`;
       this.kont = next;
     } else {
+      if (this.callStack.length >= MAX_CALL_STACK) {
+        throw new LispError(
+          'runtime',
+          `非尾调用栈深度超过上限 ${MAX_CALL_STACK}，已停止`,
+          span,
+        );
+      }
       this.callStack.push(frame);
       this.action = `调用 ${frame.name}`;
       this.kont = { tag: 'pop', next };

@@ -110,11 +110,13 @@ const highlightField = StateField.define<DecorationSet>({
       const length = transaction.newDoc.length;
       const from = Math.max(0, Math.min(value.from, length));
       const to = Math.max(from, Math.min(value.to, length));
+      const markFrom = from === to && value.error ? Math.min(from, Math.max(0, length - 1)) : from;
+      const markTo = from === to && value.error ? Math.min(length, markFrom + 1) : to;
       next =
-        from === to
+        markFrom === markTo
           ? Decoration.none
           : Decoration.set([
-              Decoration.mark({ class: value.error ? 'cm-eval-error' : 'cm-eval-current' }).range(from, to),
+              Decoration.mark({ class: value.error ? 'cm-eval-error' : 'cm-eval-current' }).range(markFrom, markTo),
             ]);
     }
     return next;

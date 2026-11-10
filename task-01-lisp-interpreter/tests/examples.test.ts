@@ -44,4 +44,22 @@ describe('示例程序', () => {
     expect(result.output).toBe('8\n13\n1\n2\n1\n');
     expect(result.last).toBe('17');
   });
+
+  it('闭包求值结束后仍能看到捕获环境', () => {
+    const session = new Session(readFileSync(join(root, 'examples', 'closure.scm'), 'utf8'));
+    const done = session.run();
+    expect(done.status).toBe('done');
+    const has = (label: string, name: string, value: string) =>
+      done.frames.some(
+        (frame) => frame.label === label && frame.bindings.some((binding) => binding.name === name && binding.value === value),
+      );
+    expect(has('make-adder', 'n', '5')).toBe(true);
+    expect(has('make-adder', 'n', '10')).toBe(true);
+    expect(has('let', 'n', '2')).toBe(true);
+    expect(has('let', 'n', '1')).toBe(true);
+    const global = done.frames.find((frame) => frame.label === '全局');
+    const add5 = global?.bindings.find((binding) => binding.name === 'add5');
+    const captured = done.frames.find((frame) => frame.id === add5?.capturedEnvId);
+    expect(captured?.bindings).toEqual([{ name: 'n', value: '5', capturedEnvId: null }]);
+  });
 });

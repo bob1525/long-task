@@ -1,4 +1,5 @@
 import { asLispError, LispError, serializeError } from './error';
+import { DEFAULT_MAX_STEPS } from './limits';
 import { Machine } from './machine';
 import { parseProgram, parseProgramRecovering } from './parser';
 import { buildTranscript } from './print';
@@ -27,8 +28,6 @@ export interface ExecuteResult {
   error: ErrorView | null;
   forms?: FormOutcome[];
 }
-
-const DEFAULT_MAX_STEPS = 5_000_000;
 
 function emptyFailure(error: LispErrorLike): ExecuteResult {
   return {
