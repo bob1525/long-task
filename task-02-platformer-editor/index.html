@@ -1,0 +1,128 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1" />
+    <title>平台跳跃 · 关卡编辑器</title>
+    <link rel="stylesheet" href="/src/styles.css" />
+  </head>
+  <body>
+    <div id="app">
+      <header>
+        <h1>平台跳跃</h1>
+        <nav class="tabs" aria-label="模式">
+          <button id="tab-game" type="button" aria-pressed="true">游戏</button>
+          <button id="tab-editor" type="button" aria-pressed="false">编辑器</button>
+        </nav>
+        <div class="physics" id="physics-controls">
+          <label>重力 <input id="gravity" type="range" min="400" max="4000" step="20" /> <span id="gravity-value"></span></label>
+          <label>跳跃高度 <input id="jump-height" type="range" min="48" max="280" step="4" /> <span id="jump-value"></span></label>
+          <label>移动速度 <input id="move-speed" type="range" min="80" max="420" step="10" /> <span id="speed-value"></span></label>
+        </div>
+      </header>
+
+      <section id="game-view" class="view">
+        <aside class="sidebar">
+          <h2>选择关卡</h2>
+          <ul id="play-list" class="level-list"></ul>
+          <p class="hint">方向键或 WASD 移动，空格 / W 跳跃，按住下方向键可穿过单向平台。R 重新开始。</p>
+        </aside>
+        <div class="stage">
+          <canvas id="game-canvas" tabindex="0" aria-label="游戏画面"></canvas>
+          <div id="hud" class="hud">
+            <span id="hud-coins">金币 0</span>
+            <span id="hud-keys">钥匙 0</span>
+            <span id="hud-level"></span>
+            <span id="hud-hint"></span>
+          </div>
+          <button id="btn-restart" type="button" class="stage-restart">重新开始</button>
+          <div id="game-overlay" class="overlay" hidden>
+            <h2 id="game-overlay-title"></h2>
+            <p id="game-overlay-detail"></p>
+            <button id="btn-overlay-restart" type="button">重新开始</button>
+          </div>
+        </div>
+      </section>
+
+      <section id="editor-view" class="view" hidden>
+        <aside class="sidebar">
+          <h2>关卡列表</h2>
+          <button id="btn-new-level" type="button">新建关卡</button>
+          <button id="btn-rename" type="button">重命名</button>
+          <button id="btn-delete" type="button">删除</button>
+          <div id="delete-confirm" class="delete-confirm" hidden>
+            <p>从列表和浏览器存档里删除当前关卡？</p>
+            <button id="btn-delete-confirm" type="button">确认删除</button>
+            <button id="btn-delete-cancel" type="button">取消</button>
+          </div>
+          <ul id="level-list" class="level-list"></ul>
+        </aside>
+        <div class="editor-center">
+          <div class="toolbar" role="toolbar" aria-label="编辑工具">
+            <button id="tool-select" type="button" data-tool="select">选择</button>
+            <button id="tool-solid" type="button" data-tool="solid">固体</button>
+            <button id="tool-one-way" type="button" data-tool="oneWay">单向</button>
+            <button id="tool-hazard" type="button" data-tool="hazard">危险</button>
+            <button id="tool-coin" type="button" data-tool="coin">金币</button>
+            <button id="tool-key" type="button" data-tool="key">钥匙</button>
+            <button id="tool-enemy" type="button" data-tool="enemy">敌人</button>
+            <button id="tool-start" type="button" data-tool="start">起点</button>
+            <button id="tool-goal" type="button" data-tool="goal">终点</button>
+            <button id="tool-erase" type="button" data-tool="erase">橡皮</button>
+            <button id="btn-undo" type="button">撤销</button>
+            <button id="btn-redo" type="button">重做</button>
+            <button id="btn-save" type="button">保存</button>
+            <button id="btn-download" type="button">下载 JSON</button>
+            <button id="btn-import" type="button">导入 JSON</button>
+            <input id="file-import" type="file" accept="application/json,.json" hidden />
+            <button id="btn-playtest" type="button">试玩</button>
+            <button id="btn-stop-playtest" type="button" hidden>停止试玩</button>
+          </div>
+          <div class="layers">
+            <label><input id="layer-terrain" type="checkbox" checked /> 地形</label>
+            <label><input id="layer-collect" type="checkbox" checked /> 收集物</label>
+            <label><input id="layer-enemy" type="checkbox" checked /> 敌人</label>
+            <label><input id="layer-markers" type="checkbox" checked /> 标记</label>
+            <label><input id="show-grid" type="checkbox" checked /> 网格</label>
+            <label><input id="show-guides" type="checkbox" checked /> 对齐辅助</label>
+            <span id="playtest-banner" class="banner" hidden>试玩中</span>
+          </div>
+          <div class="stage editor-stage">
+            <canvas id="editor-canvas" tabindex="0" aria-label="关卡编辑网格"></canvas>
+            <div id="play-hud" class="hud" hidden></div>
+            <div id="editor-overlay" class="overlay" hidden>
+              <h2 id="editor-overlay-title"></h2>
+              <p id="editor-overlay-detail"></p>
+              <button id="btn-overlay-retry" type="button">再试一次</button>
+              <button id="btn-overlay-stop" type="button">停止试玩</button>
+            </div>
+          </div>
+          <div id="editor-status" class="status"></div>
+        </div>
+        <aside id="props" class="sidebar props">
+          <h2>属性</h2>
+          <label class="stack">关卡名称 <input id="level-name" type="text" maxlength="48" /></label>
+          <div class="pair">
+            <label class="stack">宽度 <input id="level-width" type="number" min="8" max="200" /></label>
+            <label class="stack">高度 <input id="level-height" type="number" min="8" max="80" /></label>
+          </div>
+          <div class="pair">
+            <label class="stack">终点金币 <input id="require-coins" type="number" min="0" max="999" /></label>
+            <label class="stack">终点钥匙 <input id="require-keys" type="number" min="0" max="999" /></label>
+          </div>
+          <p id="requirement-warning" class="warning" hidden></p>
+          <div id="enemy-props" hidden>
+            <h3>选中的敌人</h3>
+            <label class="stack">向左格数 <input id="enemy-left" type="number" min="0" max="40" /></label>
+            <label class="stack">向右格数 <input id="enemy-right" type="number" min="0" max="40" /></label>
+            <label class="stack">巡逻速度 <input id="enemy-speed" type="number" min="0" max="400" /></label>
+          </div>
+          <p class="hint">左键放置，右键删除，拖动画笔会记成一步撤销。滚轮平移，按住空格拖动画布。物体对齐到 32 像素网格；对齐辅助会标出与起点、终点或其他物体同行同列的位置。内置关卡在松手后才另存为副本，列表里的原名保持不变。</p>
+          <p id="format-version" class="hint"></p>
+        </aside>
+      </section>
+      <div id="toast" role="alert" aria-live="assertive" hidden></div>
+    </div>
+    <script type="module" src="/src/main.ts"></script>
+  </body>
+</html>
