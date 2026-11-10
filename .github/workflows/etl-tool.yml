@@ -1,0 +1,50 @@
+name: etl-tool
+
+on:
+  pull_request:
+    paths:
+      - "task-03-etl-tool/**"
+      - ".github/workflows/etl-tool.yml"
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    defaults:
+      run:
+        working-directory: task-03-etl-tool
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install
+        run: |
+          python -m pip install --upgrade pip
+          python -m pip install -e ".[dev]"
+
+      - name: Run tests and measure transform coverage
+        run: |
+          mkdir -p reports
+          pytest \
+            --junitxml=reports/junit.xml \
+            --cov=etl_tool/transform \
+            --cov-report=term-missing \
+            --cov-report=xml:reports/coverage.xml \
+            --cov-report=html:reports/htmlcov \
+            --cov-fail-under=80
+
+      - name: Run the demo flow
+        run: python -m etl_tool demo
+
+      - name: Upload test and coverage reports
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: etl-test-and-coverage-reports
+          path: |
+            task-03-etl-tool/reports/
+            task-03-etl-tool/demo-output/

@@ -1,0 +1,90 @@
+name: customer-demo
+extract:
+  type: csv
+  path: customers.csv
+  filter:
+    field: status
+    op: eq
+    value: active
+transform:
+  rules:
+    - name: normalize_name
+      type: string
+      field: full_name
+      ops:
+        - trim
+        - title
+    - name: normalize_email
+      type: string
+      field: email
+      ops:
+        - trim
+        - lower
+    - name: clean_notes
+      type: string
+      field: notes
+      ops:
+        - trim
+        - replace:
+            old: pioneer
+            new: legend
+    - name: rename_fields
+      type: rename
+      mapping:
+        email: email_address
+        notes: comment
+    - name: cast_types
+      type: cast
+      fields:
+        id: int
+        age: int
+        price: float
+        qty: int
+    - name: line_total
+      type: expression
+      target: line_total
+      expr: price * qty
+    - name: unit_price
+      type: expression
+      target: unit_price
+      expr: price / qty
+    - name: tier
+      type: conditional
+      target: tier
+      when:
+        - if: line_total >= 1000
+          then: gold
+        - if: line_total >= 100
+          then: silver
+      else: bronze
+    - name: full_address
+      type: merge
+      fields: [street, city, zip]
+      target: address
+      separator: ", "
+    - name: split_name
+      type: split
+      field: full_name
+      separator: " "
+      targets: [first_name, last_name]
+load:
+  batch_size: 50
+  targets:
+    - type: csv
+      path: ../demo-output/customers.csv
+      mode: overwrite
+    - type: json
+      path: ../demo-output/customers.json
+      mode: overwrite
+    - type: sqlite
+      path: ../demo-output/customers.db
+      table: customers
+      mode: overwrite
+      primary_key: [id]
+error_handling:
+  checkpoint_path: ../demo-output/checkpoint.json
+  error_report_path: ../demo-output/errors.json
+  log_path: ../demo-output/etl.log
+monitor:
+  progress: true
+  report_path: ../demo-output/report.json
