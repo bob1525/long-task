@@ -1,0 +1,13 @@
+__pycache__/
+.pytest_cache/
+.coverage
+htmlcov/
+reports/
+demo-output/
+demo-output-upgrade/
+*.pyc
+*.pyo
+.mypy_cache/
+*.egg-info/
+dist/
+build/
