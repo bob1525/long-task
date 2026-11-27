@@ -1,3 +1,4 @@
+import { platformPose } from './motion'
 import type { Level, PhysicsConfig } from './schema'
 import {
   AIR_ACCEL,
@@ -20,6 +21,7 @@ import {
   separateUpward,
   sweptRect,
   type Body,
+  type Mover,
   type Rect,
 } from './physics'
 
@@ -38,6 +40,8 @@ export interface PlayerState extends Body {
   coyote: number
   jumpBuffer: number
   jumpWasDown: boolean
+  airJumps: number
+  riding: string | null
 }
 
 export interface EnemyState extends Rect {
@@ -46,6 +50,22 @@ export interface EnemyState extends Rect {
   minX: number
   maxX: number
   speed: number
+  kind: 'patrol' | 'tracker'
+  sight: number
+  originX: number
+  originY: number
+}
+
+export interface PlatformActor extends Rect {
+  id: string
+  prevX: number
+  prevY: number
+}
+
+export interface CheckpointActor extends Rect {
+  id: string
+  tileX: number
+  tileY: number
 }
 
 export interface CollectibleState extends Rect {
@@ -67,6 +87,10 @@ export interface GameState {
   lossReason?: LossReason
   goalBlocked: 'coins' | 'keys' | null
   time: number
+  platforms: PlatformActor[]
+  checkpoints: CheckpointActor[]
+  activeCheckpoint: string | null
+  respawnTimer: number
 }
 
 export interface Sim {
@@ -89,7 +113,7 @@ function collectibleBox(tileX: number, tileY: number, tileSize: number): Collect
   }
 }
 
-export function spawnEnemy(level: Level, id: string, tileX: number, tileY: number, left: number, right: number, speed: number): EnemyState {
+export function spawnEnemy(level: Level, id: string, tileX: number, tileY: number, left: number, right: number, speed: number, kind: 'patrol' | 'tracker' = 'patrol', sight = 0): EnemyState {
   const tileSize = level.tileSize
   const x = tileX * tileSize + (tileSize - ENEMY_W) / 2
   const y = tileY * tileSize + tileSize - ENEMY_H
@@ -105,7 +129,31 @@ export function spawnEnemy(level: Level, id: string, tileX: number, tileY: numbe
     minX,
     maxX: Math.max(minX, maxX),
     speed,
+    kind,
+    sight,
+    originX: Math.min(Math.max(x, minX), maxX),
+    originY: y,
   }
+}
+
+function placePlatforms(level: Level, time: number): PlatformActor[] {
+  return level.platforms.map((platform) => {
+    const pose = platformPose(platform.path, platform.width, level.tileSize, platform.speed, time)
+    return { id: platform.id, x: pose.x, y: pose.y, w: pose.w, h: pose.h, prevX: pose.x, prevY: pose.y }
+  })
+}
+
+function placeCheckpoints(level: Level): CheckpointActor[] {
+  const tile = level.tileSize
+  return level.checkpoints.map((point) => ({
+    id: point.id,
+    tileX: point.x,
+    tileY: point.y,
+    x: point.x * tile + 8,
+    y: point.y * tile + 6,
+    w: tile - 16,
+    h: tile - 8,
+  }))
 }
 
 export function createGameState(level: Level): GameState {
@@ -122,13 +170,18 @@ export function createGameState(level: Level): GameState {
     coyote: 0,
     jumpBuffer: 0,
     jumpWasDown: false,
+    airJumps: 0,
+    riding: null,
   }
   separateUpward(player, world)
+  const platforms = placePlatforms(level, 0)
   player.onGround = probeGround(player, world)
-  player.coyote = player.onGround ? COYOTE_TIME : 0
+  attachToPlatform(player, platforms)
+  if (player.onGround) player.coyote = COYOTE_TIME
+  if (player.onGround && level.physics.doubleJump) player.airJumps = 1
   return {
     player,
-    enemies: level.enemies.map((enemy) => spawnEnemy(level, enemy.id, enemy.x, enemy.y, enemy.left, enemy.right, enemy.speed)),
+    enemies: level.enemies.map((enemy) => spawnEnemy(level, enemy.id, enemy.x, enemy.y, enemy.left, enemy.right, enemy.speed, enemy.kind === 'tracker' ? 'tracker' : 'patrol', enemy.sight ?? 0)),
     coins: level.coins.map((coin) => collectibleBox(coin.x, coin.y, level.tileSize)),
     keys: level.keys.map((key) => collectibleBox(key.x, key.y, level.tileSize)),
     coinsCollected: 0,
@@ -136,7 +189,52 @@ export function createGameState(level: Level): GameState {
     status: 'playing',
     goalBlocked: null,
     time: 0,
+    platforms,
+    checkpoints: placeCheckpoints(level),
+    activeCheckpoint: null,
+    respawnTimer: 0,
   }
+}
+
+function attachToPlatform(player: PlayerState, platforms: readonly PlatformActor[]): void {
+  for (const platform of platforms) {
+    const feet = player.y + player.h
+    const overlapX = player.x + player.w > platform.x + 1 && player.x < platform.x + platform.w - 1
+    if (!overlapX || Math.abs(feet - platform.y) > 2) continue
+    player.y = platform.y - player.h
+    player.onGround = true
+    player.vy = 0
+    player.riding = platform.id
+    return
+  }
+}
+
+function reviveAtCheckpoint(state: GameState, level: Level, world: TileIndex): void {
+  const checkpoint = state.checkpoints.find((entry) => entry.id === state.activeCheckpoint)
+  if (!checkpoint) {
+    state.status = 'lost'
+    return
+  }
+  const tile = level.tileSize
+  state.player.x = checkpoint.tileX * tile + (tile - PLAYER_W) / 2
+  state.player.y = checkpoint.tileY * tile + tile - PLAYER_H
+  state.player.vx = 0
+  state.player.vy = 0
+  state.player.riding = null
+  state.player.jumpBuffer = 0
+  separateUpward(state.player, world)
+  state.player.onGround = probeGround(state.player, world)
+  attachToPlatform(state.player, state.platforms)
+  state.player.coyote = state.player.onGround ? COYOTE_TIME : 0
+  state.player.airJumps = state.player.onGround && level.physics.doubleJump ? 1 : 0
+  for (const enemy of state.enemies) {
+    enemy.x = enemy.originX
+    enemy.y = enemy.originY
+    enemy.dir = 1
+  }
+  state.respawnTimer = 1.2
+  state.lossReason = undefined
+  state.status = 'playing'
 }
 
 export function probeGround(body: Body, world: TileIndex): boolean {
@@ -171,13 +269,15 @@ export function stepSim(sim: Sim, input: InputState, dt = FIXED_DT): void {
   if (jumpPressed) state.player.jumpBuffer = JUMP_BUFFER
   else state.player.jumpBuffer = Math.max(0, state.player.jumpBuffer - dt)
 
-  const canJump = state.player.onGround || state.player.coyote > 0
+  const groundedJump = state.player.onGround || state.player.coyote > 0
+  const extraJump = physics.doubleJump === true && !groundedJump && state.player.airJumps > 0
   let jumped = false
-  if (state.player.jumpBuffer > 0 && canJump && state.player.vy >= 0) {
+  if (state.player.jumpBuffer > 0 && ((groundedJump && state.player.vy >= 0) || extraJump)) {
     state.player.vy = -jumpSpeed(physics.gravity, physics.jumpHeight)
     state.player.jumpBuffer = 0
     state.player.coyote = 0
     state.player.onGround = false
+    state.player.airJumps = extraJump ? state.player.airJumps - 1 : physics.doubleJump ? 1 : 0
     jumped = true
   }
 
@@ -203,24 +303,79 @@ export function stepSim(sim: Sim, input: InputState, dt = FIXED_DT): void {
   const dx = state.player.vx * dt
 
   for (const enemy of state.enemies) {
-    enemy.x += enemy.dir * enemy.speed * dt
-    if (enemy.x <= enemy.minX) {
-      enemy.x = enemy.minX
-      enemy.dir = 1
-    } else if (enemy.x >= enemy.maxX) {
-      enemy.x = enemy.maxX
-      enemy.dir = -1
+    if (enemy.kind === 'tracker') {
+      const playerCenter = state.player.x + state.player.w / 2
+      const enemyCenter = enemy.x + enemy.w / 2
+      const sameBand = Math.abs(state.player.y + state.player.h / 2 - (enemy.y + enemy.h / 2)) <= level.tileSize * 1.5
+      const inSight = sameBand && Math.abs(playerCenter - enemyCenter) <= enemy.sight * level.tileSize
+      if (inSight && Math.abs(playerCenter - enemyCenter) > 1) {
+        enemy.dir = playerCenter >= enemyCenter ? 1 : -1
+        enemy.x += enemy.dir * enemy.speed * dt
+        if (enemy.x < enemy.minX) enemy.x = enemy.minX
+        if (enemy.x > enemy.maxX) enemy.x = enemy.maxX
+      }
+    } else {
+      enemy.x += enemy.dir * enemy.speed * dt
+      if (enemy.x <= enemy.minX) {
+        enemy.x = enemy.minX
+        enemy.dir = 1
+      } else if (enemy.x >= enemy.maxX) {
+        enemy.x = enemy.maxX
+        enemy.dir = -1
+      }
     }
   }
 
+  for (const platform of state.platforms) {
+    const def = level.platforms.find((entry) => entry.id === platform.id)
+    if (!def) continue
+    const pose = platformPose(def.path, def.width, level.tileSize, def.speed, state.time)
+    platform.prevX = platform.x
+    platform.prevY = platform.y
+    platform.x = pose.x
+    platform.y = pose.y
+    platform.w = pose.w
+    platform.h = pose.h
+  }
+  if (state.player.riding && !input.down) {
+    const ridden = state.platforms.find((platform) => platform.id === state.player.riding)
+    if (ridden) {
+      state.player.x += ridden.x - ridden.prevX
+      state.player.y += ridden.y - ridden.prevY
+    } else state.player.riding = null
+  }
+  if (jumped) state.player.riding = null
+
+  const movers: Mover[] = state.platforms.map((platform) => ({ id: platform.id, x: platform.x, y: platform.y, w: platform.w, h: platform.h }))
   const prevX = state.player.x
   const prevY = state.player.y
-  const moved = moveBody(state.player, dx, dy, world, { ignoreOneWay: input.down })
+  const moved = moveBody(state.player, dx, dy, world, { ignoreOneWay: input.down, movers })
   if (moved.onGround && state.player.vy > 0) state.player.vy = 0
   if (moved.hitCeiling && state.player.vy < 0) state.player.vy = 0
   state.player.onGround = moved.onGround
-  if (moved.onGround) state.player.coyote = COYOTE_TIME
-  else if (!jumped) state.player.coyote = Math.max(0, state.player.coyote - dt)
+  if (!jumped && !input.down && moved.groundMover) {
+    const platform = state.platforms.find((entry) => entry.id === moved.groundMover)
+    if (platform) {
+      state.player.y = platform.y - state.player.h
+      state.player.vy = 0
+      state.player.onGround = true
+      state.player.riding = platform.id
+    }
+  } else if (!jumped && !input.down && state.player.riding) {
+    const platform = state.platforms.find((entry) => entry.id === state.player.riding)
+    const overlapX = platform ? state.player.x + state.player.w > platform.x + 1 && state.player.x < platform.x + platform.w - 1 : false
+    const feet = state.player.y + state.player.h
+    if (platform && overlapX && feet >= platform.y - 8 && feet <= platform.y + 6) {
+      state.player.y = platform.y - state.player.h
+      state.player.vy = 0
+      state.player.onGround = true
+    } else state.player.riding = null
+  } else state.player.riding = null
+  if (state.player.onGround) {
+    state.player.coyote = COYOTE_TIME
+    state.player.airJumps = physics.doubleJump ? 1 : 0
+  } else if (!jumped) state.player.coyote = Math.max(0, state.player.coyote - dt)
+  if (state.respawnTimer > 0) state.respawnTimer = Math.max(0, state.respawnTimer - dt)
 
   const horizontalSweep = sweptRect(prevX, prevY, state.player.x, prevY, state.player.w, state.player.h)
   const verticalSweep = sweptRect(state.player.x, prevY, state.player.x, state.player.y, state.player.w, state.player.h)
@@ -228,19 +383,18 @@ export function stepSim(sim: Sim, input: InputState, dt = FIXED_DT): void {
     enemyTouches(rectOf(state.player), state.enemies) ||
     state.enemies.some((enemy) => overlaps(horizontalSweep, enemy, 0.1) || overlaps(verticalSweep, enemy, 0.1))
 
-  if (moved.hazard) {
-    state.status = 'lost'
-    state.lossReason = 'hazard'
-    return
+  for (const checkpoint of state.checkpoints) {
+    if (overlaps(state.player, checkpoint, 0)) state.activeCheckpoint = checkpoint.id
   }
-  if (hitEnemy) {
+
+  const fatal = moved.hazard ? 'hazard' as const : hitEnemy ? 'enemy' as const : state.player.y > world.pixelHeight + 8 ? 'fall' as const : null
+  if (fatal) {
+    if (state.activeCheckpoint) {
+      reviveAtCheckpoint(state, level, world)
+      return
+    }
     state.status = 'lost'
-    state.lossReason = 'enemy'
-    return
-  }
-  if (state.player.y > world.pixelHeight + 8) {
-    state.status = 'lost'
-    state.lossReason = 'fall'
+    state.lossReason = fatal
     return
   }
 

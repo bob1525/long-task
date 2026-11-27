@@ -1,10 +1,11 @@
-export const LEVEL_FORMAT_VERSION = 1
+export const LEVEL_FORMAT_VERSION = 2
 export const TILE_SIZE = 32
 
 export const DEFAULT_PHYSICS: PhysicsConfig = {
   gravity: 1800,
   jumpHeight: 128,
   moveSpeed: 200,
+  doubleJump: false,
 }
 
 export type TileType = 'solid' | 'oneWay' | 'hazard'
@@ -13,7 +14,10 @@ export interface PhysicsConfig {
   gravity: number
   jumpHeight: number
   moveSpeed: number
+  doubleJump: boolean
 }
+
+export type EnemyKind = 'patrol' | 'tracker'
 
 export interface Tile {
   x: number
@@ -33,6 +37,23 @@ export interface EnemyDef {
   left: number
   right: number
   speed: number
+  kind: EnemyKind
+  sight: number
+}
+
+export interface MovingPlatformDef {
+  id: string
+  x: number
+  y: number
+  width: number
+  speed: number
+  path: Point[]
+}
+
+export interface CheckpointDef {
+  id: string
+  x: number
+  y: number
 }
 
 export interface GoalDef extends Point {
@@ -54,6 +75,8 @@ export interface Level {
   coins: Point[]
   keys: Point[]
   enemies: EnemyDef[]
+  platforms: MovingPlatformDef[]
+  checkpoints: CheckpointDef[]
 }
 
 export class LevelValidationError extends Error {
@@ -101,6 +124,7 @@ export function canonicalize(level: Level): Level {
       gravity: level.physics.gravity,
       jumpHeight: level.physics.jumpHeight,
       moveSpeed: level.physics.moveSpeed,
+      doubleJump: level.physics.doubleJump === true,
     },
     start: { x: level.start.x, y: level.start.y },
     goal: {
@@ -122,7 +146,22 @@ export function canonicalize(level: Level): Level {
         left: enemy.left,
         right: enemy.right,
         speed: enemy.speed,
+        kind: enemy.kind === 'tracker' ? 'tracker' as const : 'patrol' as const,
+        sight: enemy.sight,
       }))
+      .sort((a, b) => comparePoint(a, b) || a.id.localeCompare(b.id)),
+    platforms: level.platforms
+      .map((platform) => ({
+        id: platform.id,
+        x: platform.x,
+        y: platform.y,
+        width: platform.width,
+        speed: platform.speed,
+        path: platform.path.map((point) => ({ x: point.x, y: point.y })),
+      }))
+      .sort((a, b) => a.y - b.y || a.x - b.x || a.id.localeCompare(b.id)),
+    checkpoints: level.checkpoints
+      .map((point) => ({ id: point.id, x: point.x, y: point.y }))
       .sort((a, b) => comparePoint(a, b) || a.id.localeCompare(b.id)),
   }
 }
@@ -169,11 +208,8 @@ export function parseLevel(input: unknown): Level {
 
   if (!integer(data.version)) {
     pushIssue(issues, '缺少整数版本号 version')
-  } else if (data.version !== LEVEL_FORMAT_VERSION) {
-    pushIssue(
-      issues,
-      `不支持的关卡版本 ${data.version}，当前只支持版本 ${LEVEL_FORMAT_VERSION}`,
-    )
+  } else if (data.version !== 1 && data.version !== 2) {
+    pushIssue(issues, `不支持的关卡版本 ${data.version}，当前只支持版本 1 和 2`)
   }
 
   if (typeof data.id !== 'string' || !ID_PATTERN.test(data.id)) {
@@ -211,6 +247,10 @@ export function parseLevel(input: unknown): Level {
     if (!finiteNumber(moveSpeed) || moveSpeed < 40 || moveSpeed > 800) {
       pushIssue(issues, 'physics.moveSpeed 必须是 40–800 之间的数字（像素/秒）')
     }
+    let doubleJump = false
+    if (data.physics.doubleJump === undefined || data.physics.doubleJump === false) doubleJump = false
+    else if (data.physics.doubleJump === true) doubleJump = true
+    else pushIssue(issues, 'physics.doubleJump 必须是布尔值')
     if (
       finiteNumber(gravity) &&
       finiteNumber(jumpHeight) &&
@@ -220,9 +260,10 @@ export function parseLevel(input: unknown): Level {
       jumpHeight >= 16 &&
       jumpHeight <= 480 &&
       moveSpeed >= 40 &&
-      moveSpeed <= 800
+      moveSpeed <= 800 &&
+      (data.physics.doubleJump === undefined || typeof data.physics.doubleJump === 'boolean')
     ) {
-      physics = { gravity, jumpHeight, moveSpeed }
+      physics = { gravity, jumpHeight, moveSpeed, doubleJump }
     }
   }
 
@@ -343,6 +384,21 @@ export function parseLevel(input: unknown): Level {
         pushIssue(issues, `${path}.speed 必须是 0–400 之间的数字`)
         return
       }
+      let kind: EnemyKind = 'patrol'
+      if (entry.kind === undefined || entry.kind === 'patrol') kind = 'patrol'
+      else if (entry.kind === 'tracker') kind = 'tracker'
+      else {
+        pushIssue(issues, `${path}.kind 必须是 patrol 或 tracker`)
+        return
+      }
+      let sight = kind === 'tracker' ? 8 : 0
+      if (entry.sight !== undefined) {
+        if (!integer(entry.sight) || entry.sight < 0 || entry.sight > 40) {
+          pushIssue(issues, `${path}.sight 必须是 0–40 的整数`)
+          return
+        }
+        sight = entry.sight
+      }
       const cell = `${entry.x},${entry.y}`
       if (seenEnemyCells.has(cell)) {
         pushIssue(issues, `${path} 与另一个敌人重叠于 (${entry.x}, ${entry.y})`)
@@ -357,7 +413,114 @@ export function parseLevel(input: unknown): Level {
         left: entry.left,
         right: entry.right,
         speed: entry.speed,
+        kind,
+        sight,
       })
+    })
+  }
+
+  const platforms: MovingPlatformDef[] = []
+  const seenPlatformIds = new Set<string>()
+  if (data.platforms === undefined) {
+    // Version 1 files have no moving platforms.
+  } else if (!Array.isArray(data.platforms)) {
+    pushIssue(issues, 'platforms 必须是数组')
+  } else {
+    data.platforms.forEach((entry, index) => {
+      const pathName = `platforms[${index}]`
+      if (!isRecord(entry)) {
+        pushIssue(issues, `${pathName} 必须是对象`)
+        return
+      }
+      if (typeof entry.id !== 'string' || !ID_PATTERN.test(entry.id)) {
+        pushIssue(issues, `${pathName}.id 必须是 1–64 位的字母、数字、下划线或连字符`)
+        return
+      }
+      if (seenPlatformIds.has(entry.id)) {
+        pushIssue(issues, `${pathName}.id「${entry.id}」重复`)
+        return
+      }
+      if (!integer(entry.width) || entry.width < 1 || entry.width > 8) {
+        pushIssue(issues, `${pathName}.width 必须是 1–8 的整数`)
+        return
+      }
+      if (!finiteNumber(entry.speed) || entry.speed < 0 || entry.speed > 240) {
+        pushIssue(issues, `${pathName}.speed 必须是 0–240 之间的数字`)
+        return
+      }
+      if (!Array.isArray(entry.path) || entry.path.length < 2) {
+        pushIssue(issues, `${pathName}.path 至少要有两个路径点`)
+        return
+      }
+      const path: Point[] = []
+      let pathOk = true
+      entry.path.forEach((raw, pointIndex) => {
+        if (width <= 0 || height <= 0) return
+        const point = readPoint(raw, `${pathName}.path[${pointIndex}]`, issues, width, height)
+        if (!point) {
+          pathOk = false
+          return
+        }
+        const previous = path[path.length - 1]
+        if (previous && point.x !== previous.x && point.y !== previous.y) {
+          pushIssue(issues, `${pathName}.path[${pointIndex}] 必须与上一个点水平或垂直对齐`)
+          pathOk = false
+          return
+        }
+        if (previous && point.x === previous.x && point.y === previous.y) return
+        path.push(point)
+      })
+      if (!pathOk || path.length < 2) return
+      const origin = path[0]!
+      if (origin.x + entry.width > width) {
+        pushIssue(issues, `${pathName} 宽度超出关卡右边界`)
+        return
+      }
+      seenPlatformIds.add(entry.id)
+      platforms.push({
+        id: entry.id,
+        x: origin.x,
+        y: origin.y,
+        width: entry.width,
+        speed: entry.speed,
+        path,
+      })
+    })
+  }
+
+  const checkpoints: CheckpointDef[] = []
+  const seenCheckpointIds = new Set<string>()
+  const seenCheckpointCells = new Set<string>()
+  if (data.checkpoints === undefined) {
+    // Version 1 files have no checkpoints.
+  } else if (!Array.isArray(data.checkpoints)) {
+    pushIssue(issues, 'checkpoints 必须是数组')
+  } else {
+    data.checkpoints.forEach((entry, index) => {
+      const pathName = `checkpoints[${index}]`
+      if (!isRecord(entry)) {
+        pushIssue(issues, `${pathName} 必须是对象`)
+        return
+      }
+      if (typeof entry.id !== 'string' || !ID_PATTERN.test(entry.id)) {
+        pushIssue(issues, `${pathName}.id 必须是 1–64 位的字母、数字、下划线或连字符`)
+        return
+      }
+      if (seenCheckpointIds.has(entry.id)) {
+        pushIssue(issues, `${pathName}.id「${entry.id}」重复`)
+        return
+      }
+      if (width <= 0 || height <= 0) return
+      const point = readPoint(entry, pathName, issues, width, height)
+      if (!point) return
+      const cell = `${point.x},${point.y}`
+      if (seenCheckpointCells.has(cell)) {
+        pushIssue(issues, `${pathName} 与另一个存档点重叠于 (${point.x}, ${point.y})`)
+        return
+      }
+      seenCheckpointIds.add(entry.id)
+      seenCheckpointCells.add(cell)
+      checkpoints.push({ id: entry.id, x: point.x, y: point.y })
     })
   }
 
@@ -380,6 +543,8 @@ export function parseLevel(input: unknown): Level {
     coins,
     keys,
     enemies,
+    platforms,
+    checkpoints,
   })
 }
 

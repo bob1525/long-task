@@ -1,7 +1,10 @@
+import type { ItemRef } from './edit-ops'
 import type { GameState } from './game'
 import type { Layers, Tool } from './level-edit'
+import { platformPose } from './motion'
 import { ENEMY_H, ENEMY_W, PLAYER_H, PLAYER_W } from './physics'
 import type { Level } from './schema'
+import type { LevelIssue } from './validate'
 
 export interface Camera {
   x: number
@@ -23,6 +26,9 @@ export interface Scene {
   hover: { x: number; y: number } | null
   ghost: { x: number; y: number; tool: Tool } | null
   selectedEnemyId: string | null
+  selection?: ItemRef[]
+  selectionBox?: { x: number; y: number; w: number; h: number } | null
+  issues?: LevelIssue[]
 }
 
 export function resizeCanvas(canvas: HTMLCanvasElement): { width: number; height: number; dpr: number } | null {
@@ -51,6 +57,8 @@ export function drawScene(ctx: CanvasRenderingContext2D, scene: Scene): void {
   ctx.clip()
   ctx.translate(-Math.round(scene.camera.x), -Math.round(scene.camera.y))
   drawTiles(ctx, scene)
+  drawPlatforms(ctx, scene)
+  drawCheckpoints(ctx, scene)
   if (scene.mode === 'edit' && scene.showGrid) drawGrid(ctx, scene)
   drawCollectibles(ctx, scene)
   drawActors(ctx, scene)
@@ -151,6 +159,62 @@ function drawHazard(ctx: CanvasRenderingContext2D, x: number, y: number, s: numb
   }
 }
 
+function drawPlatforms(ctx: CanvasRenderingContext2D, scene: Scene): void {
+  if (scene.mode === 'edit' && !scene.layers.terrain) return
+  const actors = scene.state?.platforms
+  if (actors && scene.mode === 'play') {
+    for (const platform of actors) drawPlatformSlab(ctx, platform.x, platform.y, platform.w, platform.h)
+    return
+  }
+  for (const platform of scene.level.platforms) {
+    const pose = platformPose(platform.path, platform.width, scene.level.tileSize, platform.speed, scene.time)
+    if (scene.mode === 'edit') {
+      ctx.strokeStyle = 'rgba(90, 62, 32, 0.85)'
+      ctx.setLineDash([5, 4])
+      ctx.beginPath()
+      platform.path.forEach((point, index) => {
+        const x = point.x * scene.level.tileSize + pose.w / 2
+        const y = point.y * scene.level.tileSize + 4
+        if (index === 0) ctx.moveTo(x, y)
+        else ctx.lineTo(x, y)
+      })
+      ctx.stroke()
+      ctx.setLineDash([])
+    }
+    drawPlatformSlab(ctx, pose.x, pose.y, pose.w, pose.h)
+  }
+}
+
+function drawPlatformSlab(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number): void {
+  ctx.fillStyle = '#8a5a32'
+  ctx.fillRect(x, y, w, h)
+  ctx.fillStyle = '#f0d2a4'
+  ctx.fillRect(x, y, w, 3)
+  ctx.strokeStyle = '#4e311c'
+  ctx.strokeRect(x + 0.5, y + 0.5, w - 1, h - 1)
+}
+
+function drawCheckpoints(ctx: CanvasRenderingContext2D, scene: Scene): void {
+  if (scene.mode === 'edit' && !scene.layers.markers) return
+  const ts = scene.level.tileSize
+  const active = scene.state?.activeCheckpoint
+  const points = scene.state
+    ? scene.state.checkpoints.map((point) => ({ id: point.id, x: point.tileX, y: point.tileY }))
+    : scene.level.checkpoints
+  for (const point of points) {
+    const x = point.x * ts
+    const y = point.y * ts
+    const lit = active === point.id
+    ctx.fillStyle = lit ? '#7dba6a' : '#2f6f86'
+    ctx.fillRect(x + ts / 2 - 2, y + 8, 4, ts - 12)
+    ctx.beginPath()
+    ctx.moveTo(x + ts / 2, y + 8)
+    ctx.lineTo(x + ts - 6, y + 14)
+    ctx.lineTo(x + ts / 2, y + 20)
+    ctx.fill()
+  }
+}
+
 function drawCollectibles(ctx: CanvasRenderingContext2D, scene: Scene): void {
   const show = scene.mode === 'play' || scene.layers.collect
   if (!show) return
@@ -216,7 +280,8 @@ function drawActors(ctx: CanvasRenderingContext2D, scene: Scene): void {
         ctx.stroke()
         ctx.setLineDash([])
       }
-      drawEnemy(ctx, enemy.x, enemy.y, enemy.dir, scene.time)
+      const tracker = scene.level.enemies.find((entry) => entry.id === enemy.id)?.kind === 'tracker'
+      drawEnemy(ctx, enemy.x, enemy.y, enemy.dir, scene.time, tracker)
       if (scene.selectedEnemyId && 'id' in enemy && enemy.id === scene.selectedEnemyId) {
         ctx.strokeStyle = '#e0a15a'
         ctx.lineWidth = 2
@@ -237,12 +302,12 @@ function drawActors(ctx: CanvasRenderingContext2D, scene: Scene): void {
   }
 }
 
-function drawEnemy(ctx: CanvasRenderingContext2D, x: number, y: number, dir: number, time: number): void {
+function drawEnemy(ctx: CanvasRenderingContext2D, x: number, y: number, dir: number, time: number, tracker = false): void {
   const hop = Math.abs(Math.sin(time * 8)) * 2
-  ctx.fillStyle = '#9a3412'
+  ctx.fillStyle = tracker ? '#1d4e89' : '#9a3412'
   ctx.fillRect(x + 2, y + 18 - hop, 8, 6)
   ctx.fillRect(x + 14, y + 18 - hop, 8, 6)
-  ctx.fillStyle = '#de4d3a'
+  ctx.fillStyle = tracker ? '#3d8bfd' : '#de4d3a'
   round(ctx, x, y - hop, ENEMY_W, 20, 6)
   ctx.fill()
   ctx.fillStyle = '#fff7ef'
@@ -342,6 +407,27 @@ function drawEditorAids(ctx: CanvasRenderingContext2D, scene: Scene): void {
     ctx.strokeStyle = '#2a2118'
     ctx.strokeRect(cell.x * ts + 1, cell.y * ts + 1, ts - 2, ts - 2)
   }
+  const tsBox = scene.level.tileSize
+  for (const item of scene.selection ?? []) {
+    const cell = itemCell(scene.level, item)
+    if (!cell) continue
+    ctx.strokeStyle = '#e0a15a'
+    ctx.lineWidth = 2
+    ctx.strokeRect(cell.x * tsBox + 2, cell.y * tsBox + 2, tsBox - 4, tsBox - 4)
+    ctx.lineWidth = 1
+  }
+  if (scene.selectionBox && scene.selectionBox.w > 0 && scene.selectionBox.h > 0) {
+    ctx.fillStyle = 'rgba(224,161,90,0.16)'
+    ctx.fillRect(scene.selectionBox.x, scene.selectionBox.y, scene.selectionBox.w, scene.selectionBox.h)
+    ctx.strokeStyle = '#e0a15a'
+    ctx.strokeRect(scene.selectionBox.x, scene.selectionBox.y, scene.selectionBox.w, scene.selectionBox.h)
+  }
+  for (const issue of scene.issues ?? []) {
+    ctx.strokeStyle = '#d15b52'
+    ctx.lineWidth = 2
+    ctx.strokeRect(issue.x * tsBox + 1, issue.y * tsBox + 1, tsBox - 2, tsBox - 2)
+    ctx.lineWidth = 1
+  }
   if (!scene.ghost) return
   ctx.save()
   ctx.globalAlpha = 0.55
@@ -353,8 +439,26 @@ function drawEditorAids(ctx: CanvasRenderingContext2D, scene: Scene): void {
   else if (scene.ghost.tool === 'coin') drawCoin(ctx, scene.ghost.x, scene.ghost.y, ts, scene.time)
   else if (scene.ghost.tool === 'key') drawKey(ctx, scene.ghost.x, scene.ghost.y, ts, scene.time)
   else if (scene.ghost.tool === 'enemy') drawEnemy(ctx, x + (ts - ENEMY_W) / 2, y + ts - ENEMY_H, 1, scene.time)
+  else if (scene.ghost.tool === 'tracker') drawEnemy(ctx, x + (ts - ENEMY_W) / 2, y + ts - ENEMY_H, 1, scene.time, true)
+  else if (scene.ghost.tool === 'platform') drawPlatformSlab(ctx, x, y, ts * 3, 10)
   else ctx.strokeRect(x + 2, y + 2, ts - 4, ts - 4)
   ctx.restore()
+}
+
+function itemCell(level: Level, item: ItemRef): { x: number; y: number } | null {
+  if (item.kind === 'tile' || item.kind === 'coin' || item.kind === 'key') return { x: item.x, y: item.y }
+  if (item.kind === 'start') return level.start
+  if (item.kind === 'goal') return level.goal
+  if (item.kind === 'enemy') {
+    const enemy = level.enemies.find((entry) => entry.id === item.id)
+    return enemy ? { x: enemy.x, y: enemy.y } : null
+  }
+  if (item.kind === 'platform') {
+    const platform = level.platforms.find((entry) => entry.id === item.id)
+    return platform ? { x: platform.x, y: platform.y } : null
+  }
+  const checkpoint = level.checkpoints.find((entry) => entry.id === item.id)
+  return checkpoint ? { x: checkpoint.x, y: checkpoint.y } : null
 }
 
 function round(ctx: CanvasRenderingContext2D, x: number, y: number, w: number, h: number, r: number): void {

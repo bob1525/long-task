@@ -49,6 +49,8 @@ const meadow = build({
   ],
   keys: [],
   enemies: [],
+  platforms: [],
+  checkpoints: [],
 })
 
 const bridge = build({
@@ -72,6 +74,8 @@ const bridge = build({
   ],
   keys: [{ x: 40, y: 14 }],
   enemies: [],
+  platforms: [],
+  checkpoints: [],
 })
 
 const patrol = build({
@@ -97,14 +101,10 @@ const patrol = build({
     { x: 48, y: 12 },
   ],
   keys: [],
-  enemies: [{ id: 'sentry', x: 20, y: 12, left: 2, right: 2, speed: 42 }],
+  enemies: [{ id: 'sentry', x: 20, y: 12, left: 2, right: 2, speed: 42, kind: 'patrol', sight: 0 }],
+  platforms: [],
+  checkpoints: [],
 })
-
-export const builtinLevels: Level[] = [meadow, bridge, patrol]
-
-export function builtinById(id: string): Level | undefined {
-  return builtinLevels.find((level) => level.id === id)
-}
 
 export function createEmptyLevel(name = '未命名关卡'): Level {
   return parseLevel({
@@ -121,5 +121,41 @@ export function createEmptyLevel(name = '未命名关卡'): Level {
     coins: [],
     keys: [],
     enemies: [],
+    platforms: [],
+    checkpoints: [],
   })
+}
+
+const lift = build({
+  version: LEVEL_FORMAT_VERSION,
+  id: 'builtin-lift',
+  name: '升降栈桥',
+  width: 48,
+  height: 18,
+  tileSize: TILE_SIZE,
+  physics: { ...DEFAULT_PHYSICS, doubleJump: true },
+  start: { x: 2, y: 13 },
+  goal: { x: 45, y: 7, requireCoins: 0, requireKeys: 0 },
+  tiles: [
+    ...row('solid', 14, 0, 10),
+    ...row('solid', 14, 20, 28),
+    ...row('solid', 8, 34, 46),
+    ...row('hazard', 16, 11, 19),
+    ...row('hazard', 16, 29, 33),
+  ],
+  coins: [{ x: 24, y: 13 }],
+  keys: [],
+  enemies: [{ id: 'hunter', x: 40, y: 7, left: 4, right: 2, speed: 64, kind: 'tracker', sight: 8 }],
+  platforms: [
+    { id: 'ferry', x: 7, y: 14, width: 4, speed: 36, path: [{ x: 7, y: 14 }, { x: 17, y: 14 }] },
+    { id: 'lift', x: 29, y: 14, width: 5, speed: 32, path: [{ x: 29, y: 14 }, { x: 29, y: 7 }] },
+  ],
+  checkpoints: [{ id: 'mid', x: 24, y: 13 }],
+})
+
+export const builtinLevels: Level[] = [meadow, bridge, patrol]
+export const campaignLevels: Level[] = [meadow, bridge, patrol, lift]
+
+export function builtinById(id: string): Level | undefined {
+  return campaignLevels.find((level) => level.id === id)
 }

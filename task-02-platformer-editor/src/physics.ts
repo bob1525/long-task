@@ -64,11 +64,16 @@ export class TileIndex {
   }
 }
 
+export interface Mover extends Rect {
+  id: string
+}
+
 export interface MoveResult {
   onGround: boolean
   hitCeiling: boolean
   hitWall: boolean
   hazard: boolean
+  groundMover: string | null
 }
 
 export function overlaps(a: Rect, b: Rect, eps = 0.05): boolean {
@@ -125,6 +130,7 @@ interface YResolution {
   dy: number
   onGround: boolean
   hitCeiling: boolean
+  groundMover: string | null
 }
 
 function resolveX(body: Rect, dx: number, world: TileIndex): { dx: number; hit: boolean } {
@@ -172,8 +178,8 @@ function resolveX(body: Rect, dx: number, world: TileIndex): { dx: number; hit: 
   return { dx: allowed, hit }
 }
 
-function resolveY(body: Rect, dy: number, world: TileIndex, ignoreOneWay: boolean): YResolution {
-  if (dy === 0) return { dy: 0, onGround: false, hitCeiling: false }
+function resolveY(body: Rect, dy: number, world: TileIndex, ignoreOneWay: boolean, movers: readonly Mover[]): YResolution {
+  if (dy === 0) return { dy: 0, onGround: false, hitCeiling: false, groundMover: null }
   const ts = world.tileSize
   const prevTop = body.y
   const prevBottom = body.y + body.h
@@ -183,6 +189,7 @@ function resolveY(body: Rect, dy: number, world: TileIndex, ignoreOneWay: boolea
   if (dy > 0) {
     let limitBottom = prevBottom + dy
     let onGround = false
+    let groundMover: string | null = null
     const minY = Math.floor(prevBottom / ts) - 1
     const maxY = Math.floor((prevBottom + dy) / ts) + 1
     for (let ty = minY; ty <= maxY; ty += 1) {
@@ -196,10 +203,22 @@ function resolveY(body: Rect, dy: number, world: TileIndex, ignoreOneWay: boolea
         if (prevBottom <= top + slop && top < limitBottom) {
           limitBottom = top
           onGround = true
+          groundMover = null
         }
       }
     }
-    return { dy: limitBottom - prevBottom, onGround, hitCeiling: false }
+    if (!ignoreOneWay) {
+      for (const mover of movers) {
+        const top = mover.y
+        if (!horizontalOverlap(body, mover.x, mover.x + mover.w)) continue
+        if (prevBottom <= top + ONE_WAY_SLOP && top < limitBottom) {
+          limitBottom = top
+          onGround = true
+          groundMover = mover.id
+        }
+      }
+    }
+    return { dy: limitBottom - prevBottom, onGround, hitCeiling: false, groundMover }
   }
 
   let limitTop = prevTop + dy
@@ -217,11 +236,11 @@ function resolveY(body: Rect, dy: number, world: TileIndex, ignoreOneWay: boolea
       }
     }
   }
-  return { dy: limitTop - prevTop, onGround: false, hitCeiling }
+  return { dy: limitTop - prevTop, onGround: false, hitCeiling, groundMover: null }
 }
 
-export function moveBody(body: Body, dx: number, dy: number, world: TileIndex, options?: { ignoreOneWay?: boolean }): MoveResult {
-  const result: MoveResult = { onGround: false, hitCeiling: false, hitWall: false, hazard: false }
+export function moveBody(body: Body, dx: number, dy: number, world: TileIndex, options?: { ignoreOneWay?: boolean; movers?: readonly Mover[] }): MoveResult {
+  const result: MoveResult = { onGround: false, hitCeiling: false, hitWall: false, hazard: false, groundMover: null }
   const x0 = body.x
   const y0 = body.y
   const resolvedX = resolveX(body, dx, world)
@@ -230,10 +249,11 @@ export function moveBody(body: Body, dx: number, dy: number, world: TileIndex, o
   if (rectHitsHazard(sweptRect(x0, y0, body.x, y0, body.w, body.h), world)) result.hazard = true
 
   const y1 = body.y
-  const resolvedY = resolveY(body, dy, world, options?.ignoreOneWay ?? false)
+  const resolvedY = resolveY(body, dy, world, options?.ignoreOneWay ?? false, options?.movers ?? [])
   body.y += resolvedY.dy
   result.onGround = resolvedY.onGround
   result.hitCeiling = resolvedY.hitCeiling
+  result.groundMover = resolvedY.groundMover
   if (rectHitsHazard(sweptRect(body.x, y1, body.x, body.y, body.w, body.h), world)) result.hazard = true
   return result
 }

@@ -1,4 +1,5 @@
 import type { GameDebugApi, PublicState } from './debug'
+import { copyItems, extendPlatformPath, moveItems, pasteItems, selectInRect, type Clipboard, type ItemRef } from './edit-ops'
 import { createSim, expandScript, stepSim, type InputState, type Sim } from './game'
 import { History } from './history'
 import {
@@ -16,7 +17,7 @@ import {
   type Selection,
   type Tool,
 } from './level-edit'
-import { builtinById, builtinLevels, createEmptyLevel } from './levels'
+import { builtinById, campaignLevels, createEmptyLevel } from './levels'
 import { advanceAccumulator, FIXED_DT, MAX_FRAME_DT } from './physics'
 import { drawScene, resizeCanvas, type Camera } from './render'
 import {
@@ -33,6 +34,7 @@ import {
 } from './schema'
 import { BUILTIN_SCRIPTS } from './scripts'
 import { applyCurrentToList, loadActiveId, loadCustomLevels, saveActiveId, saveCustomLevels } from './storage'
+import { assessLevel, type LevelIssue } from './validate'
 
 const HISTORY_LIMIT = 80
 
@@ -82,7 +84,10 @@ export class PlatformerApp {
   private readonly enemyLeft = must<HTMLInputElement>('enemy-left')
   private readonly enemyRight = must<HTMLInputElement>('enemy-right')
   private readonly enemySpeed = must<HTMLInputElement>('enemy-speed')
+  private readonly enemySight = must<HTMLInputElement>('enemy-sight')
   private readonly gravity = must<HTMLInputElement>('gravity')
+  private readonly doubleJump = must<HTMLInputElement>('double-jump')
+  private readonly validationList = must<HTMLElement>('validation-list')
   private readonly jumpHeight = must<HTMLInputElement>('jump-height')
   private readonly moveSpeed = must<HTMLInputElement>('move-speed')
   private readonly gravityValue = must<HTMLElement>('gravity-value')
@@ -119,12 +124,19 @@ export class PlatformerApp {
   private custom: Level[] = []
   private history: History<Level>
   private source: 'builtin' | 'custom' = 'builtin'
-  private currentId = builtinLevels[0]!.id
+  private currentId = campaignLevels[0]!.id
   private mode: 'game' | 'editor' = 'game'
   private playtesting = false
   private frozen = false
   private sim: Sim | null = null
-  private readonly session: PhysicsConfig = { gravity: 1800, jumpHeight: 128, moveSpeed: 200 }
+  private readonly session: PhysicsConfig = { gravity: 1800, jumpHeight: 128, moveSpeed: 200, doubleJump: false }
+  private selection: ItemRef[] = []
+  private clipboard: Clipboard | null = null
+  private boxAnchor: { x: number; y: number } | null = null
+  private boxCurrent: { x: number; y: number } | null = null
+  private dragCell: { x: number; y: number } | null = null
+  private issues: LevelIssue[] = []
+  private pathPlatformId: string | null = null
   private readonly playCamera: Camera = { x: 0, y: 0 }
   private readonly editorCamera: Camera = { x: 0, y: 0 }
   private snapPlay = true
@@ -152,7 +164,7 @@ export class PlatformerApp {
     if (!gameCtx || !editorCtx) throw new Error('无法创建画布')
     this.gameCtx = gameCtx
     this.editorCtx = editorCtx
-    this.history = new History(cloneLevel(builtinLevels[0]!), HISTORY_LIMIT, cloneLevel, sameLevel)
+    this.history = new History(cloneLevel(campaignLevels[0]!), HISTORY_LIMIT, cloneLevel, sameLevel)
     this.bind()
     this.restore()
     this.selectLevel(this.currentId, this.source, false)
@@ -200,6 +212,8 @@ export class PlatformerApp {
     })
     this.undoButton.addEventListener('click', () => this.undo())
     this.redoButton.addEventListener('click', () => this.redo())
+    must<HTMLButtonElement>('btn-copy').addEventListener('click', () => this.copySelection())
+    must<HTMLButtonElement>('btn-paste').addEventListener('click', () => this.pasteSelection())
     must<HTMLButtonElement>('btn-save').addEventListener('click', () => this.saveExplicit())
     must<HTMLButtonElement>('btn-download').addEventListener('click', () => this.download())
     must<HTMLButtonElement>('btn-import').addEventListener('click', () => this.fileInput.click())
@@ -230,6 +244,7 @@ export class PlatformerApp {
       slider.addEventListener('pointerup', () => this.finishSlider())
       slider.addEventListener('keyup', () => this.finishSlider())
     }
+    this.doubleJump.addEventListener('change', () => this.onDoubleJump())
 
     this.nameInput.addEventListener('input', () => this.onNameInput())
     this.nameInput.addEventListener('blur', () => this.finishTextStroke())
@@ -237,7 +252,7 @@ export class PlatformerApp {
     this.heightInput.addEventListener('change', () => this.onResize())
     this.coinsInput.addEventListener('change', () => this.onRequirement())
     this.keysInput.addEventListener('change', () => this.onRequirement())
-    for (const input of [this.enemyLeft, this.enemyRight, this.enemySpeed]) {
+    for (const input of [this.enemyLeft, this.enemyRight, this.enemySpeed, this.enemySight]) {
       input.addEventListener('focus', () => { if (!this.syncing) this.beginEdit() })
       input.addEventListener('input', () => this.onEnemyInput())
       input.addEventListener('blur', () => this.finishTextStroke())
@@ -245,9 +260,16 @@ export class PlatformerApp {
 
     this.editorCanvas.addEventListener('contextmenu', (event) => event.preventDefault())
     this.editorCanvas.addEventListener('pointerdown', (event) => this.onPointerDown(event))
-    this.editorCanvas.addEventListener('pointermove', (event) => this.onPointerMove(event))
-    this.editorCanvas.addEventListener('pointerup', (event) => this.onPointerUp(event))
-    this.editorCanvas.addEventListener('pointerleave', () => { if (!this.painting && !this.panning) this.hover = null })
+    this.editorCanvas.addEventListener('pointermove', (event) => {
+      if (this.painting || this.panning) return
+      this.onPointerMove(event)
+    })
+    window.addEventListener('pointermove', (event) => {
+      if (!this.painting && !this.panning) return
+      this.onPointerMove(event)
+    })
+    window.addEventListener('pointerup', (event) => this.onPointerUp(event))
+    window.addEventListener('pointercancel', (event) => this.onPointerUp(event))
     this.editorCanvas.addEventListener('wheel', (event) => {
       if (this.playtesting) return
       event.preventDefault()
@@ -274,7 +296,7 @@ export class PlatformerApp {
   private restore(): void {
     try {
       const loaded = loadCustomLevels(localStorage)
-      const seen = new Set(builtinLevels.map((level) => level.id))
+      const seen = new Set(campaignLevels.map((level) => level.id))
       for (const level of loaded.levels) {
         if (seen.has(level.id)) level.id = createLevelId()
         seen.add(level.id)
@@ -352,7 +374,7 @@ export class PlatformerApp {
     this.custom = this.custom.filter((level) => level.id !== removed)
     const next = this.custom[0]
     if (next) this.selectLevel(next.id, 'custom')
-    else this.selectLevel(builtinLevels[0]!.id, 'builtin')
+    else this.selectLevel(campaignLevels[0]!.id, 'builtin')
     this.persist()
     this.toast(`已删除「${removedName}」`, true)
   }
@@ -362,6 +384,7 @@ export class PlatformerApp {
       this.toast('内置关卡不用单独保存。改动会自动另存为副本。')
       return
     }
+    if (!this.reportIssues('保存')) return
     this.finishTextStroke()
     this.persist()
     this.toast('已保存到浏览器', true)
@@ -378,6 +401,8 @@ export class PlatformerApp {
     this.session.gravity = physics.gravity
     this.session.jumpHeight = physics.jumpHeight
     this.session.moveSpeed = physics.moveSpeed
+    this.session.doubleJump = physics.doubleJump === true
+    this.doubleJump.checked = this.session.doubleJump
   }
 
   private startPlaytest(): void {
@@ -474,6 +499,15 @@ export class PlatformerApp {
     this.updateReadout()
   }
 
+  private onDoubleJump(): void {
+    const enabled = this.doubleJump.checked
+    this.session.doubleJump = enabled
+    if (this.mode === 'editor' && !this.playtesting) {
+      if (!this.history.stroking) this.history.begin()
+      this.history.current().physics.doubleJump = enabled
+    }
+  }
+
   private onNameInput(): void {
     if (this.syncing) return
     if (!this.history.stroking) this.history.begin()
@@ -510,6 +544,7 @@ export class PlatformerApp {
     enemy.left = clamp(Math.round(Number(this.enemyLeft.value) || 0), 0, 40)
     enemy.right = clamp(Math.round(Number(this.enemyRight.value) || 0), 0, 40)
     enemy.speed = clamp(Number(this.enemySpeed.value) || 0, 0, 400)
+    enemy.sight = clamp(Math.round(Number(this.enemySight.value) || 0), 0, 40)
   }
 
   private onPointerDown(event: PointerEvent): void {
@@ -521,6 +556,24 @@ export class PlatformerApp {
       return
     }
     if (event.button !== 0 && event.button !== 2) return
+    const cell = this.cellFromEvent(event)
+    const world = this.worldFromEvent(event)
+    if (event.button === 0 && this.tool === 'select' && cell && world) {
+      this.history.begin()
+      this.painting = true
+      this.erasing = false
+      this.editorCanvas.setPointerCapture(event.pointerId)
+      this.beginSelect(cell, world)
+      return
+    }
+    if (event.button === 0 && this.tool === 'platform' && cell) {
+      this.history.begin()
+      this.painting = true
+      this.erasing = false
+      this.editorCanvas.setPointerCapture(event.pointerId)
+      this.placeOrExtendPlatform(cell.x, cell.y)
+      return
+    }
     this.history.begin()
     this.painting = true
     this.erasing = event.button === 2 || this.tool === 'erase'
@@ -530,6 +583,7 @@ export class PlatformerApp {
 
   private onPointerMove(event: PointerEvent): void {
     const cell = this.cellFromEvent(event)
+    const world = this.worldFromEvent(event)
     this.hover = cell
     if (this.panning) {
       this.editorCamera.x -= event.clientX - this.panLast.x
@@ -538,7 +592,17 @@ export class PlatformerApp {
       this.clampEditorCamera()
       return
     }
-    if (!this.painting || !cell) return
+    if (!this.painting) return
+    if (this.boxAnchor && world) {
+      this.boxCurrent = world
+      return
+    }
+    if (this.dragCell && cell) {
+      this.dragSelection(cell)
+      return
+    }
+    if (this.tool === 'platform') return
+    if (!cell) return
     this.applyCell(cell.x, cell.y)
   }
 
@@ -548,8 +612,12 @@ export class PlatformerApp {
       return
     }
     if (!this.painting) return
+    this.finishSelectionBox()
     this.painting = false
     this.drag = null
+    this.dragCell = null
+    this.boxAnchor = null
+    this.boxCurrent = null
     this.history.end()
     this.captureBuiltinEdit()
     if (this.source === 'custom') this.persist()
@@ -581,7 +649,7 @@ export class PlatformerApp {
     }
     if (this.erasing) eraseAt(level, x, y)
     else paintInto(level, this.tool, x, y)
-    if (this.tool === 'enemy') {
+    if (this.tool === 'enemy' || this.tool === 'tracker') {
       const enemy = level.enemies.find((entry) => entry.x === x && entry.y === y)
       if (enemy) this.selectedEnemyId = enemy.id
       this.syncEnemyProps()
@@ -594,6 +662,109 @@ export class PlatformerApp {
     const worldX = event.clientX - rect.left + this.editorCamera.x
     const worldY = event.clientY - rect.top + this.editorCamera.y
     return cellFromWorld(worldX, worldY, this.history.current().tileSize)
+  }
+
+  private worldFromEvent(event: PointerEvent): { x: number; y: number } | null {
+    const rect = this.editorCanvas.getBoundingClientRect()
+    if (rect.width < 2) return null
+    return { x: event.clientX - rect.left + this.editorCamera.x, y: event.clientY - rect.top + this.editorCamera.y }
+  }
+
+  private beginSelect(cell: { x: number; y: number }, world: { x: number; y: number }): void {
+    const picked = pickAt(this.history.current(), cell.x, cell.y)
+    if (!picked) {
+      this.selection = []
+      this.selectedEnemyId = null
+      this.dragCell = null
+      this.boxAnchor = world
+      this.boxCurrent = world
+      this.syncEnemyProps()
+      return
+    }
+    const selected = this.selection.some((item) => sameItem(item, picked))
+    this.selection = selected ? this.selection : [picked]
+    this.dragCell = cell
+    this.boxAnchor = null
+    this.selectedEnemyId = picked.kind === 'enemy' ? picked.id : null
+    this.syncEnemyProps()
+  }
+
+  private dragSelection(cell: { x: number; y: number }): void {
+    if (!this.dragCell) return
+    const dx = cell.x - this.dragCell.x
+    const dy = cell.y - this.dragCell.y
+    if (dx === 0 && dy === 0) return
+    const moved = moveItems(this.history.current(), this.selection, dx, dy)
+    if (!moved) return
+    this.selection = moved
+    this.dragCell = cell
+  }
+
+  private finishSelectionBox(): void {
+    if (!this.boxAnchor || !this.boxCurrent) return
+    const level = this.history.current()
+    const ts = level.tileSize
+    const ax = Math.floor(Math.min(this.boxAnchor.x, this.boxCurrent.x) / ts)
+    const ay = Math.floor(Math.min(this.boxAnchor.y, this.boxCurrent.y) / ts)
+    const bx = Math.floor(Math.max(this.boxAnchor.x, this.boxCurrent.x) / ts)
+    const by = Math.floor(Math.max(this.boxAnchor.y, this.boxCurrent.y) / ts)
+    this.selection = selectInRect(level, ax, ay, bx, by)
+    const enemy = this.selection.find((item) => item.kind === 'enemy')
+    this.selectedEnemyId = enemy?.kind === 'enemy' ? enemy.id : null
+    this.syncEnemyProps()
+  }
+
+  private placeOrExtendPlatform(x: number, y: number): void {
+    const level = this.history.current()
+    const current = this.pathPlatformId ? level.platforms.find((platform) => platform.id === this.pathPlatformId) : undefined
+    if (current && extendPlatformPath(current, x, y, level.width, level.height)) return
+    if (!paintInto(level, 'platform', x, y)) return
+    const created = [...level.platforms].reverse().find((platform) => platform.path[0]?.x === x && platform.path[0]?.y === y)
+    this.pathPlatformId = created?.id ?? null
+  }
+
+  private copySelection(): void {
+    if (this.mode !== 'editor' || this.playtesting) return
+    const copied = copyItems(this.history.current(), this.selection)
+    const count = copied.tiles.length + copied.coins.length + copied.keys.length + copied.enemies.length + copied.platforms.length + copied.checkpoints.length
+    if (count === 0) {
+      this.toast('没有可复制的物体。起点和终点需要直接移动。')
+      return
+    }
+    this.clipboard = copied
+    this.toast(`已复制 ${count} 个物体`, true)
+  }
+
+  private pasteSelection(): void {
+    if (this.mode !== 'editor' || this.playtesting || !this.clipboard) {
+      if (!this.clipboard) this.toast('剪贴板是空的。')
+      return
+    }
+    const level = this.history.current()
+    const anchor = this.hover ?? { x: Math.min(level.width - 1, this.clipboard.anchorX + 2), y: this.clipboard.anchorY }
+    this.history.begin()
+    this.selection = pasteItems(level, this.clipboard, anchor.x, anchor.y)
+    this.history.end()
+    this.captureBuiltinEdit()
+    if (this.source === 'custom') this.persist()
+    this.toast(this.selection.length ? `已粘贴 ${this.selection.length} 个物体` : '没有位置可以粘贴', this.selection.length > 0)
+  }
+
+  private reportIssues(action: string): boolean {
+    this.issues = assessLevel(this.history.current())
+    this.renderValidation()
+    if (this.issues.length === 0) return true
+    this.toast(`${action}被拦住：\n${this.issues.map((issue) => `${issue.message}（${issue.x}, ${issue.y}）`).join('\n')}`)
+    return false
+  }
+
+  private renderValidation(): void {
+    this.validationList.replaceChildren()
+    for (const issue of this.issues) {
+      const item = document.createElement('li')
+      item.textContent = `${issue.message} 位置 ${issue.x}, ${issue.y}`
+      this.validationList.append(item)
+    }
   }
 
   private onKeyDown(event: KeyboardEvent): void {
@@ -609,6 +780,16 @@ export class PlatformerApp {
     }
     if (!typing && event.code === 'KeyR' && (this.mode === 'game' || this.playtesting)) {
       this.restart()
+      return
+    }
+    if (!typing && (event.ctrlKey || event.metaKey) && this.mode === 'editor' && !this.playtesting && event.code === 'KeyC') {
+      event.preventDefault()
+      this.copySelection()
+      return
+    }
+    if (!typing && (event.ctrlKey || event.metaKey) && this.mode === 'editor' && !this.playtesting && event.code === 'KeyV') {
+      event.preventDefault()
+      this.pasteSelection()
       return
     }
     if (!typing && (event.ctrlKey || event.metaKey) && this.mode === 'editor' && !this.playtesting && (event.code === 'KeyZ' || event.code === 'KeyY')) {
@@ -654,6 +835,8 @@ export class PlatformerApp {
 
   private afterHistory(): void {
     this.selectedEnemyId = null
+    this.selection = []
+    this.pathPlatformId = null
     if (this.source === 'custom') this.persist()
     this.copySession(this.history.current().physics)
     this.syncSliders()
@@ -665,8 +848,10 @@ export class PlatformerApp {
     this.tool = tool
     if (tool === 'solid' || tool === 'oneWay' || tool === 'hazard') this.layers.terrain = true
     if (tool === 'coin' || tool === 'key') this.layers.collect = true
-    if (tool === 'enemy') this.layers.enemy = true
+    if (tool === 'enemy' || tool === 'tracker') this.layers.enemy = true
+    if (tool === 'checkpoint' || tool === 'platform') this.layers.markers = true
     if (tool === 'start' || tool === 'goal') this.layers.markers = true
+    if (tool !== 'platform') this.pathPlatformId = null
     this.layerTerrain.checked = this.layers.terrain
     this.layerCollect.checked = this.layers.collect
     this.layerEnemy.checked = this.layers.enemy
@@ -687,7 +872,7 @@ export class PlatformerApp {
   private fillList(list: HTMLElement): void {
     list.replaceChildren()
     const entries: Array<{ level: Level; source: 'builtin' | 'custom' }> = [
-      ...builtinLevels.map((level) => ({ level, source: 'builtin' as const })),
+      ...campaignLevels.map((level) => ({ level, source: 'builtin' as const })),
       ...this.custom.map((level) => ({ level, source: 'custom' as const })),
     ]
     for (const entry of entries) {
@@ -722,11 +907,12 @@ export class PlatformerApp {
   private syncEnemyProps(): void {
     const enemy = this.selectedEnemyId ? enemyById(this.history.current(), this.selectedEnemyId) : undefined
     this.enemyProps.hidden = !enemy
-    if (!enemy || document.activeElement === this.enemyLeft || document.activeElement === this.enemyRight || document.activeElement === this.enemySpeed) return
+    if (!enemy || document.activeElement === this.enemyLeft || document.activeElement === this.enemyRight || document.activeElement === this.enemySpeed || document.activeElement === this.enemySight) return
     this.syncing = true
     this.enemyLeft.value = String(enemy.left)
     this.enemyRight.value = String(enemy.right)
     this.enemySpeed.value = String(enemy.speed)
+    this.enemySight.value = String(enemy.sight)
     this.syncing = false
   }
 
@@ -735,6 +921,7 @@ export class PlatformerApp {
     this.gravity.value = String(physics.gravity)
     this.jumpHeight.value = String(physics.jumpHeight)
     this.moveSpeed.value = String(physics.moveSpeed)
+    this.doubleJump.checked = physics.doubleJump === true
     this.updateReadout()
   }
 
@@ -784,6 +971,15 @@ export class PlatformerApp {
     this.gameSize = this.gameView.hidden ? this.gameSize : resizeCanvas(this.gameCanvas)
     this.editorSize = this.editorView.hidden ? this.editorSize : resizeCanvas(this.editorCanvas)
     const level = this.history.current()
+    this.issues = assessLevel(level)
+    const selectionBox = this.boxAnchor && this.boxCurrent
+      ? {
+          x: Math.min(this.boxAnchor.x, this.boxCurrent.x),
+          y: Math.min(this.boxAnchor.y, this.boxCurrent.y),
+          w: Math.abs(this.boxCurrent.x - this.boxAnchor.x),
+          h: Math.abs(this.boxCurrent.y - this.boxAnchor.y),
+        }
+      : null
     if (this.mode === 'game' && this.gameSize && this.sim) {
       drawScene(this.gameCtx, {
         level: this.sim.level,
@@ -820,6 +1016,9 @@ export class PlatformerApp {
         hover: playing ? null : this.hover,
         ghost: !playing && this.hover && this.tool !== 'select' && this.tool !== 'erase' ? { ...this.hover, tool: this.tool } : null,
         selectedEnemyId: this.selectedEnemyId,
+        selection: playing ? [] : this.selection,
+        selectionBox: playing ? null : selectionBox,
+        issues: playing ? [] : this.issues,
       })
     }
     this.updateHud()
@@ -854,15 +1053,18 @@ export class PlatformerApp {
     const warning = requirementWarning(level)
     this.warning.hidden = !warning
     this.warning.textContent = warning ?? ''
+    this.renderValidation()
   }
 
   private updateStatus(level: Level): void {
     const cell = this.hover ? `${this.hover.x}, ${this.hover.y}` : '—'
-    this.statusEl.textContent = `${level.name} · ${level.width}×${level.height} · 光标 ${cell} · 已对齐到网格 · 地形 ${level.tiles.length} · 金币 ${level.coins.length} · 钥匙 ${level.keys.length} · 敌人 ${level.enemies.length} · 撤销 ${this.history.undoSteps} · 重做 ${this.history.redoSteps}`
+    this.statusEl.textContent = `${level.name} · ${level.width}×${level.height} · 光标 ${cell} · 已选 ${this.selection.length} · 地形 ${level.tiles.length} · 金币 ${level.coins.length} · 钥匙 ${level.keys.length} · 敌人 ${level.enemies.length} · 移动台 ${level.platforms.length} · 存档 ${level.checkpoints.length} · 撤销 ${this.history.undoSteps} · 重做 ${this.history.redoSteps}`
   }
 
   private persist(): void {
-    if (this.source === 'custom') this.custom = applyCurrentToList(this.custom, this.history.current())
+    if (this.source === 'custom' && assessLevel(this.history.current()).length === 0) {
+      this.custom = applyCurrentToList(this.custom, this.history.current())
+    }
     try {
       saveCustomLevels(localStorage, this.custom)
       saveActiveId(localStorage, this.currentId)
@@ -880,6 +1082,7 @@ export class PlatformerApp {
   }
 
   private download(): void {
+    if (!this.reportIssues('下载')) return
     const level = this.history.current()
     const blob = new Blob([serializeLevel(level)], { type: 'application/json' })
     const url = URL.createObjectURL(blob)
@@ -979,6 +1182,17 @@ export class PlatformerApp {
     this.renderLists()
     this.renderFrame(sim.state.time)
   }
+}
+
+function sameItem(a: ItemRef, b: ItemRef): boolean {
+  if (a.kind !== b.kind) return false
+  if (a.kind === 'enemy' || a.kind === 'platform' || a.kind === 'checkpoint') {
+    return b.kind === a.kind && a.id === b.id
+  }
+  if (a.kind === 'tile' || a.kind === 'coin' || a.kind === 'key') {
+    return 'x' in b && a.x === b.x && a.y === b.y
+  }
+  return true
 }
 
 function lossText(reason: Sim['state']['lossReason']): string {
