@@ -88,8 +88,9 @@ select {
 .mark { width: 38px; height: 38px; color: var(--accent); flex: none; }
 
 .controls { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; justify-content: flex-end; }
-.blurb, .dirty { margin: 0; color: var(--muted); font-size: 13px; }
+.blurb, .dirty, .share, .breakpoints, .breakpoint { margin: 0; color: var(--muted); font-size: 13px; }
 .dirty { color: var(--accent); }
+.breakpoints, .breakpoint { color: #ffb4a2; }
 
 .workspace {
   flex: 1;

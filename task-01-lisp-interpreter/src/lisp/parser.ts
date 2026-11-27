@@ -11,12 +11,14 @@ interface ListFrame {
   dotExpr: SExpr | null;
 }
 
-interface QuoteFrame {
-  kind: 'quote';
+interface WrapFrame {
+  kind: 'wrap';
+  name: 'quote' | 'quasiquote' | 'unquote' | 'unquote-splicing';
   start: SourcePos;
+  markEnd: SourcePos;
 }
 
-type Frame = ListFrame | QuoteFrame;
+type Frame = ListFrame | WrapFrame;
 
 function point(pos: SourcePos): SourceSpan {
   return { start: pos, end: pos };
@@ -37,19 +39,16 @@ function atomFrom(token: Token): SExpr {
   }
 }
 
-function makeQuote(start: SourcePos, expr: SExpr): SExpr {
-  const span: SourceSpan = { start, end: expr.span.end };
-  const quoteSymbol: SExpr = {
-    t: 'sym',
-    v: 'quote',
-    span: {
-      start,
-      end: { offset: start.offset + 1, line: start.line, column: start.column + 1 },
-    },
-  };
+function makeWrapped(frame: WrapFrame, expr: SExpr): SExpr {
+  const span: SourceSpan = { start: frame.start, end: expr.span.end };
+  const head: SExpr = { t: 'sym', v: frame.name, span: { start: frame.start, end: frame.markEnd } };
   const nil: SExpr = { t: 'nil', span: expr.span };
   const tail: SExpr = { t: 'pair', car: expr, cdr: nil, span };
-  return { t: 'pair', car: quoteSymbol, cdr: tail, span };
+  return { t: 'pair', car: head, cdr: tail, span };
+}
+
+function missingWrapper(frame: WrapFrame): string {
+  return frame.name === 'quote' ? '引号后缺少表达式' : '准引用后缺少表达式';
 }
 
 function buildList(frame: ListFrame, end: SourcePos): SExpr {
@@ -99,9 +98,9 @@ function parseTokens(tokens: Token[], end: SourcePos, recover: boolean): ParseIt
       while (true) {
         const top = stack[stack.length - 1];
         if (!top) return current;
-        if (top.kind === 'quote') {
+        if (top.kind === 'wrap') {
           stack.pop();
-          current = makeQuote(top.start, current);
+          current = makeWrapped(top, current);
           continue;
         }
         if (top.dotExpr) {
@@ -121,20 +120,19 @@ function parseTokens(tokens: Token[], end: SourcePos, recover: boolean): ParseIt
       if (!token) {
         const top = stack[stack.length - 1];
         if (!top) throw new LispError('syntax', '意外的文件结束', point(end));
-        if (top.kind === 'list' && top.dotted && !top.dotExpr) {
+        if (top.kind === 'wrap') {
+          throw new LispError('syntax', missingWrapper(top), { start: top.start, end });
+        }
+        if (top.dotted && !top.dotExpr) {
           throw new LispError('syntax', '点号后缺少表达式', { start: top.start, end });
         }
-        throw new LispError(
-          'syntax',
-          top.kind === 'quote' ? '引号后缺少表达式' : '列表未闭合，缺少右括号',
-          { start: top.start, end },
-        );
+        throw new LispError('syntax', '列表未闭合，缺少右括号', { start: top.start, end });
       }
 
       if (token.kind === 'rparen') {
         const top = stack[stack.length - 1];
         if (!top) throw new LispError('syntax', '多余的右括号', token.span);
-        if (top.kind === 'quote') throw new LispError('syntax', '引号后缺少表达式', token.span);
+        if (top.kind === 'wrap') throw new LispError('syntax', missingWrapper(top), token.span);
         stack.pop();
         if (top.dotted && !top.dotExpr) {
           throw new LispError('syntax', '点号后缺少表达式', token.span);
@@ -167,8 +165,18 @@ function parseTokens(tokens: Token[], end: SourcePos, recover: boolean): ParseIt
         continue;
       }
 
-      if (token.kind === 'quote') {
-        stack.push({ kind: 'quote', start: token.span.start });
+      if (
+        token.kind === 'quote' ||
+        token.kind === 'quasiquote' ||
+        token.kind === 'unquote' ||
+        token.kind === 'unquote-splicing'
+      ) {
+        stack.push({
+          kind: 'wrap',
+          name: token.kind,
+          start: token.span.start,
+          markEnd: token.span.end,
+        });
         index += 1;
         continue;
       }

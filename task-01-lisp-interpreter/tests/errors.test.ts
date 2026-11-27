@@ -76,7 +76,7 @@ describe('错误种类与位置', () => {
     expect(symbol.ok).toBe(false);
     expect(symbol.error?.kind).toBe('undefined');
     expect(symbol.error?.text ?? '').toContain('第 1 行');
-    const backtick = execute('`x');
+    const backtick = execute('`');
     expect(backtick.ok).toBe(false);
     expect(backtick.error?.kind).toBe('syntax');
   });

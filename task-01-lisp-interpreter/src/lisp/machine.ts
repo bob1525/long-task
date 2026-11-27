@@ -4,10 +4,28 @@ import { MAX_CALL_STACK } from './limits';
 import { parseParamList, toProperList } from './params';
 import { buildTranscript, previewValue, printSExpr, printValue } from './print';
 import type { Env, Snapshot, SourceSpan, SExpr, Value, World } from './types';
-import { isTruthy, NIL, typeName, VOID } from './value';
+import { FALSE, isProperList, isTruthy, NIL, TRUE, typeName, VOID } from './value';
 import { consPair, type Runtime } from './world';
 
-const SPECIAL = new Set(['define', 'lambda', 'if', 'cond', 'let', 'let*', 'begin', 'quote', 'set!']);
+const SPECIAL = new Set([
+  'define',
+  'lambda',
+  'if',
+  'cond',
+  'let',
+  'let*',
+  'begin',
+  'quote',
+  'quasiquote',
+  'unquote',
+  'unquote-splicing',
+  'set!',
+  'and',
+  'or',
+  'do',
+]);
+
+const DO_LOOP = 'do-loop';
 
 interface LetState {
   star: boolean;
@@ -19,6 +37,36 @@ interface LetState {
   base: Env;
   tail: boolean;
   span: SourceSpan;
+  loopProc: Value | null;
+}
+
+type QQFrame =
+  | { kind: 'wrap'; name: 'quasiquote' | 'unquote' | 'unquote-splicing' }
+  | { kind: 'car'; cdr: SExpr; level: number }
+  | { kind: 'cdr'; car: Value }
+  | { kind: 'splice'; cdr: SExpr; level: number; span: SourceSpan }
+  | { kind: 'splice-tail'; head: Value; span: SourceSpan };
+
+function symNode(name: string, span: SourceSpan): SExpr {
+  return { t: 'sym', v: name, span };
+}
+
+function boolNode(value: boolean, span: SourceSpan): SExpr {
+  return { t: 'bool', v: value, span };
+}
+
+function numNode(value: number, span: SourceSpan): SExpr {
+  return { t: 'num', v: value, span };
+}
+
+function listNode(items: SExpr[], span: SourceSpan): SExpr {
+  let node: SExpr = { t: 'nil', span };
+  for (let index = items.length - 1; index >= 0; index -= 1) {
+    const car = items[index];
+    if (!car) continue;
+    node = { t: 'pair', car, cdr: node, span };
+  }
+  return node;
 }
 
 type Kont =
@@ -32,6 +80,9 @@ type Kont =
   | { tag: 'args'; op: Value; done: Value[]; todo: SExpr[]; env: Env; tail: boolean; span: SourceSpan; next: Kont }
   | { tag: 'cond'; body: SExpr[]; rest: SExpr[]; env: Env; tail: boolean; span: SourceSpan; next: Kont }
   | { tag: 'let'; state: LetState; next: Kont }
+  | { tag: 'and'; rest: SExpr[]; env: Env; tail: boolean; span: SourceSpan; next: Kont }
+  | { tag: 'or'; rest: SExpr[]; env: Env; tail: boolean; span: SourceSpan; next: Kont }
+  | { tag: 'qq'; env: Env; stack: QQFrame[]; next: Kont }
   | { tag: 'pop'; next: Kont };
 
 type Control =
@@ -421,6 +472,27 @@ export class Machine {
         this.action = '引用，不求值';
         this.control = { tag: 'value', value: this.sexprToValue(items[1]!) };
         return;
+      case 'quasiquote': {
+        if (items.length !== 2) throw new LispError('syntax', 'quasiquote 需要且只需要一个参数', span);
+        const template = items[1];
+        if (!template) throw new LispError('syntax', 'quasiquote 需要且只需要一个参数', span);
+        this.action = '展开准引用';
+        this.kont = { tag: 'qq', env, stack: [], next: this.kont };
+        this.driveQQ(template, 1);
+        return;
+      }
+      case 'unquote':
+      case 'unquote-splicing':
+        throw new LispError('syntax', `${name} 出现在准引用之外`, span);
+      case 'and':
+        this.evalAndOr('and', items.slice(1), span, env, tail);
+        return;
+      case 'or':
+        this.evalAndOr('or', items.slice(1), span, env, tail);
+        return;
+      case 'do':
+        this.evalDo(items, span, env, tail);
+        return;
       case 'set!':
         this.evalSet(items, span, env);
         return;
@@ -503,9 +575,18 @@ export class Machine {
   private evalLet(items: SExpr[], span: SourceSpan, env: Env, tail: boolean, star: boolean): void {
     const label = star ? 'let*' : 'let';
     if (items.length < 3) throw new LispError('syntax', `${label} 形式不完整`, span);
-    const bindingExpr = items[1];
+    let bindingExpr = items[1];
+    let body = items.slice(2);
+    let loopName: string | null = null;
     if (!bindingExpr) throw new LispError('syntax', `${label} 缺少绑定列表`, span);
-    if (bindingExpr.t === 'sym') throw new LispError('syntax', '不支持命名 let', bindingExpr.span);
+    if (bindingExpr.t === 'sym') {
+      if (star) throw new LispError('syntax', '不支持命名 let*', bindingExpr.span);
+      if (items.length < 4) throw new LispError('syntax', '命名 let 形式不完整', span);
+      loopName = bindingExpr.v;
+      bindingExpr = items[2] ?? null;
+      body = items.slice(3);
+      if (!bindingExpr) throw new LispError('syntax', '命名 let 缺少绑定列表', span);
+    }
     const bindings = toProperList(bindingExpr);
     if (!bindings) throw new LispError('syntax', '绑定列表必须是真列表', bindingExpr.span);
     const parsed: Array<{ name: string; init: SExpr }> = [];
@@ -523,10 +604,27 @@ export class Machine {
       }
       parsed.push({ name: nameExpr.v, init });
     }
-    const body = items.slice(2);
     if (body.length === 0) throw new LispError('syntax', `${label} 缺少函数体`, span);
+    let loopProc: Value | null = null;
+    if (loopName) {
+      const loopEnv = env.extend(loopName);
+      loopProc = this.makeProcedure(
+        loopName,
+        parsed.map((binding) => binding.name),
+        null,
+        body,
+        loopEnv,
+        span,
+      );
+      loopEnv.define(loopName, loopProc);
+    }
     const extended = star ? env.extend(label) : null;
     if (parsed.length === 0) {
+      if (loopProc) {
+        this.action = `调用命名 let ${loopName ?? ''}`;
+        this.apply(loopProc, [], tail, span, this.kont);
+        return;
+      }
       const bodyEnv = extended ?? env.extend(label);
       this.action = `${label} 没有绑定，求值函数体`;
       this.beginSequence(body, bodyEnv, tail, span);
@@ -551,6 +649,7 @@ export class Machine {
         base: env,
         tail,
         span,
+        loopProc,
       },
       next: this.kont,
     };
@@ -749,6 +848,12 @@ export class Machine {
           };
           return;
         }
+        if (!state.star && state.loopProc) {
+          const args = ready.map((binding) => binding.value);
+          this.action = `调用命名 let ${state.loopProc.kind === 'procedure' ? state.loopProc.name ?? '' : ''}`;
+          this.apply(state.loopProc, args, state.tail, state.span, kont.next);
+          return;
+        }
         const bodyEnv = state.star ? state.env : state.base.extend('let');
         if (!state.star) {
           for (const binding of ready) bodyEnv.define(binding.name, binding.value);
@@ -758,6 +863,29 @@ export class Machine {
         this.beginSequence(state.body, bodyEnv, state.tail, state.span);
         return;
       }
+      case 'and':
+        if (!isTruthy(value)) {
+          this.kont = kont.next;
+          this.action = 'and 遇到假值，短路';
+          this.control = { tag: 'value', value };
+          return;
+        }
+        this.kont = kont.next;
+        this.evalAndOr('and', kont.rest, kont.span, kont.env, kont.tail);
+        return;
+      case 'or':
+        if (isTruthy(value)) {
+          this.kont = kont.next;
+          this.action = 'or 遇到真值，短路';
+          this.control = { tag: 'value', value };
+          return;
+        }
+        this.kont = kont.next;
+        this.evalAndOr('or', kont.rest, kont.span, kont.env, kont.tail);
+        return;
+      case 'qq':
+        this.continueQQ(kont, value);
+        return;
       case 'pop':
         this.callStack.pop();
         this.action = '过程返回';
@@ -774,6 +902,10 @@ export class Machine {
 
   private apply(op: Value, args: Value[], tail: boolean, span: SourceSpan, next: Kont): void {
     this.currentSpan = span;
+    if (op.kind === 'builtin' && op.name === 'apply') {
+      this.applyApply(args, tail, span, next);
+      return;
+    }
     if (op.kind === 'builtin') {
       this.action = `调用内置过程 ${op.name}`;
       const result = op.fn(args, {
@@ -835,5 +967,218 @@ export class Machine {
     this.noteStack();
     this.currentEnv = env;
     this.beginSequence(op.body, env, true, op.span);
+  }
+
+  private applyApply(args: Value[], tail: boolean, span: SourceSpan, next: Kont): void {
+    if (args.length < 2) {
+      throw new LispError('runtime', `过程 apply 参数个数错误：期望至少 2 个，实际 ${args.length} 个`, span);
+    }
+    const proc = args[0];
+    if (!proc || (proc.kind !== 'procedure' && proc.kind !== 'builtin')) {
+      throw new LispError('type', `apply 的第一个参数必须是过程，实际得到的是${typeName(proc ?? NIL)}`, span);
+    }
+    const last = args[args.length - 1];
+    if (!last || !isProperList(last)) {
+      throw new LispError('runtime', 'apply 的最后一个参数必须是真列表', span);
+    }
+    const spread: Value[] = [];
+    const seen = new Set<number>();
+    let current = last;
+    while (current.kind === 'pair') {
+      if (seen.has(current.id)) throw new LispError('runtime', 'apply 遇到循环列表', span);
+      seen.add(current.id);
+      spread.push(current.car);
+      current = current.cdr;
+    }
+    this.action = '展开 apply';
+    this.apply(proc, [...args.slice(1, -1), ...spread], tail, span, next);
+  }
+
+  private evalAndOr(name: 'and' | 'or', exprs: SExpr[], span: SourceSpan, env: Env, tail: boolean): void {
+    if (exprs.length === 0) {
+      this.action = name === 'and' ? 'and 没有参数，结果为真' : 'or 没有参数，结果为假';
+      this.control = { tag: 'value', value: name === 'and' ? TRUE : FALSE };
+      return;
+    }
+    const first = exprs[0];
+    if (!first) {
+      this.control = { tag: 'value', value: name === 'and' ? TRUE : FALSE };
+      return;
+    }
+    const last = exprs.length === 1;
+    this.action = `求值 ${name} 的参数`;
+    this.currentEnv = env;
+    this.currentSpan = first.span;
+    this.control = { tag: 'eval', expr: first, env, tail: last && tail };
+    if (!last) this.kont = { tag: name, rest: exprs.slice(1), env, tail, span, next: this.kont };
+  }
+
+  private evalDo(items: SExpr[], span: SourceSpan, env: Env, tail: boolean): void {
+    if (items.length < 3) throw new LispError('syntax', 'do 形式不完整', span);
+    const spec = items[1];
+    const clause = items[2];
+    if (!spec || !clause) throw new LispError('syntax', 'do 形式不完整', span);
+    const specs = toProperList(spec);
+    if (!specs) throw new LispError('syntax', 'do 的绑定必须是真列表', spec.span);
+    const commands = items.slice(3);
+    const bindings: Array<{ name: string; init: SExpr; step: SExpr }> = [];
+    const names = new Set<string>();
+    for (const binding of specs) {
+      const parts = toProperList(binding);
+      if (!parts || (parts.length !== 2 && parts.length !== 3)) {
+        throw new LispError('syntax', 'do 绑定必须是 (变量 初始值) 或 (变量 初始值 步进)', binding.span);
+      }
+      const nameExpr = parts[0];
+      const init = parts[1];
+      if (!nameExpr || !init || nameExpr.t !== 'sym') {
+        throw new LispError('syntax', 'do 的变量必须是符号', nameExpr?.span ?? binding.span);
+      }
+      if (names.has(nameExpr.v)) throw new LispError('syntax', `do 中变量 ${nameExpr.v} 重复绑定`, nameExpr.span);
+      names.add(nameExpr.v);
+      bindings.push({ name: nameExpr.v, init, step: parts[2] ?? nameExpr });
+    }
+    const clauseItems = toProperList(clause);
+    if (!clauseItems || clauseItems.length === 0) {
+      throw new LispError('syntax', 'do 的测试子句不完整', clause.span);
+    }
+    const test = clauseItems[0];
+    if (!test) throw new LispError('syntax', 'do 的测试子句不完整', clause.span);
+    const results = clauseItems.slice(1);
+    let loopName = DO_LOOP;
+    while (names.has(loopName)) loopName += '*';
+    const stepCall = listNode(
+      [symNode(loopName, span), ...bindings.map((binding) => binding.step)],
+      span,
+    );
+    const elseExpr = commands.length === 0 ? stepCall : listNode([symNode('begin', span), ...commands, stepCall], span);
+    const thenExpr =
+      results.length === 0
+        ? listNode([symNode('if', span), boolNode(false, span), numNode(0, span)], span)
+        : results.length === 1
+          ? results[0]!
+          : listNode([symNode('begin', span), ...results], span);
+    const ifExpr = listNode([symNode('if', span), test, thenExpr, elseExpr], span);
+    const bindingList = listNode(
+      bindings.map((binding) => listNode([symNode(binding.name, binding.init.span), binding.init], binding.init.span)),
+      span,
+    );
+    const namedLet = listNode([symNode('let', span), symNode(loopName, span), bindingList, ifExpr], span);
+    this.action = '进入 do';
+    this.evalCombination(namedLet, env, tail);
+  }
+
+  private formNamed(expr: SExpr, name: string): SExpr | null {
+    if (expr.t !== 'pair' || expr.car.t !== 'sym' || expr.car.v !== name) return null;
+    if (expr.cdr.t !== 'pair' || expr.cdr.cdr.t !== 'nil') {
+      throw new LispError('syntax', `${name} 需要且只需要一个参数`, expr.span);
+    }
+    return expr.cdr.car;
+  }
+
+  private driveQQ(template: SExpr, level: number): void {
+    const kont = this.kont;
+    if (kont.tag !== 'qq') throw new LispError('runtime', '内部错误：准引用续延丢失', this.currentSpan);
+    let current = template;
+    let currentLevel = level;
+    while (true) {
+      if (this.formNamed(current, 'unquote-splicing')) {
+        throw new LispError('syntax', '准引用中 unquote-splicing 不能独立出现', current.span);
+      }
+      const unquote = this.formNamed(current, 'unquote');
+      if (unquote) {
+        if (currentLevel === 1) {
+          this.action = '求值 unquote';
+          this.currentSpan = unquote.span;
+          this.currentEnv = kont.env;
+          this.control = { tag: 'eval', expr: unquote, env: kont.env, tail: false };
+          return;
+        }
+        kont.stack.push({ kind: 'wrap', name: 'unquote' });
+        current = unquote;
+        currentLevel -= 1;
+        continue;
+      }
+      const nested = this.formNamed(current, 'quasiquote');
+      if (nested) {
+        kont.stack.push({ kind: 'wrap', name: 'quasiquote' });
+        current = nested;
+        currentLevel += 1;
+        continue;
+      }
+      if (current.t === 'pair') {
+        const carSplice = this.formNamed(current.car, 'unquote-splicing');
+        if (carSplice && currentLevel === 1) {
+          kont.stack.push({ kind: 'splice', cdr: current.cdr, level: currentLevel, span: current.car.span });
+          this.action = '求值 unquote-splicing';
+          this.currentSpan = carSplice.span;
+          this.currentEnv = kont.env;
+          this.control = { tag: 'eval', expr: carSplice, env: kont.env, tail: false };
+          return;
+        }
+        if (carSplice && currentLevel > 1) {
+          kont.stack.push({ kind: 'car', cdr: current.cdr, level: currentLevel });
+          kont.stack.push({ kind: 'wrap', name: 'unquote-splicing' });
+          current = carSplice;
+          currentLevel -= 1;
+          continue;
+        }
+        kont.stack.push({ kind: 'car', cdr: current.cdr, level: currentLevel });
+        current = current.car;
+        continue;
+      }
+      this.control = { tag: 'value', value: this.sexprToValue(current) };
+      return;
+    }
+  }
+
+  private continueQQ(kont: Extract<Kont, { tag: 'qq' }>, value: Value): void {
+    const frame = kont.stack.pop();
+    if (!frame) {
+      this.kont = kont.next;
+      this.action = '准引用完成';
+      this.control = { tag: 'value', value };
+      return;
+    }
+    if (frame.kind === 'wrap') {
+      this.control = {
+        tag: 'value',
+        value: this.cons({ kind: 'symbol', name: frame.name }, this.cons(value, NIL)),
+      };
+      return;
+    }
+    if (frame.kind === 'car') {
+      kont.stack.push({ kind: 'cdr', car: value });
+      this.driveQQ(frame.cdr, frame.level);
+      return;
+    }
+    if (frame.kind === 'cdr') {
+      this.control = { tag: 'value', value: this.cons(frame.car, value) };
+      return;
+    }
+    if (frame.kind === 'splice') {
+      if (!isProperList(value)) {
+        throw new LispError('runtime', 'unquote-splicing 的结果必须是真列表', frame.span);
+      }
+      kont.stack.push({ kind: 'splice-tail', head: value, span: frame.span });
+      this.driveQQ(frame.cdr, frame.level);
+      return;
+    }
+    this.control = { tag: 'value', value: this.appendList(frame.head, value, frame.span) };
+  }
+
+  private appendList(head: Value, tail: Value, span: SourceSpan): Value {
+    if (!isProperList(head)) throw new LispError('runtime', 'unquote-splicing 的结果必须是真列表', span);
+    const cells: Value[] = [];
+    let current = head;
+    while (current.kind === 'pair') {
+      cells.push(current.car);
+      current = current.cdr;
+    }
+    let node = tail;
+    for (let index = cells.length - 1; index >= 0; index -= 1) {
+      const car = cells[index];
+      if (car) node = this.cons(car, node);
+    }
+    return node;
   }
 }

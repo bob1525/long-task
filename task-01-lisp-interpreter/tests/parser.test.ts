@@ -121,7 +121,7 @@ describe('解析器', () => {
     expect(() => parseProgram('(. 1)')).toThrow(/点号前缺少表达式/);
     expect(() => parseProgram('(1 . )')).toThrow(/点号后缺少表达式/);
     expect(() => parseProgram('(1 . 2 3)')).toThrow(/点号后只能有一个表达式/);
-    expect(() => parseProgram('`x')).toThrow(/准引用/);
+    expect(() => parseProgram('`')).toThrow(/准引用/);
   });
 
   it('解析 4000 层嵌套列表', () => {

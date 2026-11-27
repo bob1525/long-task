@@ -48,12 +48,26 @@ function writeAtom(value: Value): string | null {
   }
 }
 
-function quoteInner(value: Value): Value | null {
-  if (value.kind !== 'pair') return null;
-  if (value.car.kind !== 'symbol' || value.car.name !== 'quote') return null;
-  if (value.cdr.kind !== 'pair') return null;
-  if (value.cdr.cdr.kind !== 'nil') return null;
-  return value.cdr.car;
+function sugarPrefix(name: string): string | null {
+  switch (name) {
+    case 'quote':
+      return "'";
+    case 'quasiquote':
+      return '`';
+    case 'unquote':
+      return ',';
+    case 'unquote-splicing':
+      return ',@';
+    default:
+      return null;
+  }
+}
+
+function quoteInner(value: Value): { prefix: string; inner: Value } | null {
+  if (value.kind !== 'pair' || value.car.kind !== 'symbol') return null;
+  const prefix = sugarPrefix(value.car.name);
+  if (!prefix || value.cdr.kind !== 'pair' || value.cdr.cdr.kind !== 'nil') return null;
+  return { prefix, inner: value.cdr.car };
 }
 
 function writeValue(value: Value, seen: Set<number>): string {
@@ -66,7 +80,7 @@ function writeValue(value: Value, seen: Set<number>): string {
   if (inner) {
     seen.add(value.id);
     if (value.cdr.kind === 'pair') seen.add(value.cdr.id);
-    const text = `'${writeValue(inner, seen)}`;
+    const text = `${inner.prefix}${writeValue(inner.inner, seen)}`;
     seen.delete(value.id);
     if (value.cdr.kind === 'pair') seen.delete(value.cdr.id);
     return text;
@@ -109,10 +123,11 @@ export function displayString(value: Value): string {
   return printValue(value);
 }
 
-function quoteInnerSExpr(expr: SExpr): SExpr | null {
-  if (expr.t !== 'pair' || expr.car.t !== 'sym' || expr.car.v !== 'quote') return null;
-  if (expr.cdr.t !== 'pair' || expr.cdr.cdr.t !== 'nil') return null;
-  return expr.cdr.car;
+function quoteInnerSExpr(expr: SExpr): { prefix: string; inner: SExpr } | null {
+  if (expr.t !== 'pair' || expr.car.t !== 'sym') return null;
+  const prefix = sugarPrefix(expr.car.v);
+  if (!prefix || expr.cdr.t !== 'pair' || expr.cdr.cdr.t !== 'nil') return null;
+  return { prefix, inner: expr.cdr.car };
 }
 
 function writeSExpr(expr: SExpr): string {
@@ -129,7 +144,7 @@ function writeSExpr(expr: SExpr): string {
       return '()';
     case 'pair': {
       const quoted = quoteInnerSExpr(expr);
-      if (quoted) return `'${writeSExpr(quoted)}`;
+      if (quoted) return `${quoted.prefix}${writeSExpr(quoted.inner)}`;
       const parts: string[] = [];
       const seen = new Set<SExpr>();
       let current: SExpr = expr;

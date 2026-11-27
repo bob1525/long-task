@@ -123,9 +123,9 @@ describe('作用域与高阶函数', () => {
     expectValue('((lambda xs xs) 4 5)', '(4 5)');
   });
 
-  it('let 重复绑定、命名 let、错误 define 都是语法错误', () => {
+  it('let 重复绑定、命名 let*、错误 define 都是语法错误', () => {
     expectKind('(let ((a 1) (a 2)) a)', 'syntax');
-    expectKind('(let loop ((a 1)) a)', 'syntax');
+    expectKind('(let* loop ((a 1)) a)', 'syntax');
     expectKind('(define)', 'syntax');
     expectKind('(define (1) 1)', 'syntax');
     expectKind('(lambda (x))', 'syntax');

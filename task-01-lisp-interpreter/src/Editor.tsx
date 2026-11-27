@@ -15,6 +15,8 @@ interface Highlight {
 interface EditorProps {
   source: string;
   highlight: Highlight | null;
+  breakpoints: readonly number[];
+  onToggleBreakpoint: (line: number) => void;
   onChange: (source: string) => void;
 }
 
@@ -22,11 +24,16 @@ interface ScanState {
   inString: boolean;
 }
 
-const KEYWORDS = new Set(['define', 'lambda', 'if', 'cond', 'let', 'let*', 'begin', 'quote', 'set!', 'else']);
+const KEYWORDS = new Set([
+  'define', 'lambda', 'if', 'cond', 'let', 'let*', 'begin', 'quote', 'set!', 'else',
+  'and', 'or', 'do', 'quasiquote', 'unquote', 'unquote-splicing',
+]);
 const BUILTINS = new Set([
   'cons', 'car', 'cdr', 'list', 'null?', 'pair?', 'list?', 'length', 'append',
   'number?', 'boolean?', 'string?', 'symbol?', 'procedure?', 'eq?', 'equal?', 'not',
-  'display', 'write', 'newline', 'modulo', 'remainder', 'abs',
+  'display', 'write', 'newline', 'modulo', 'remainder', 'abs', 'apply',
+  'string-length', 'string-append', 'substring', 'string->symbol', 'symbol->string', 'number->string',
+  'list-ref', 'assoc', 'member',
 ]);
 
 const lispLanguage = StreamLanguage.define<ScanState>({
@@ -60,8 +67,9 @@ const lispLanguage = StreamLanguage.define<ScanState>({
       stream.next();
       return 'paren';
     }
-    if (next === "'") {
+    if (next === "'" || next === '`' || next === ',') {
       stream.next();
+      if (next === ',' && stream.peek() === '@') stream.next();
       return 'operator';
     }
     if (!next) return null;
@@ -93,6 +101,28 @@ const lispHighlight = HighlightStyle.define([
 ]);
 
 const setHighlight = StateEffect.define<Highlight | null>();
+const setBreakpoints = StateEffect.define<readonly number[]>();
+
+const breakpointField = StateField.define<DecorationSet>({
+  create() {
+    return Decoration.none;
+  },
+  update(decorations, transaction) {
+    let next = decorations.map(transaction.changes);
+    for (const effect of transaction.effects) {
+      if (!effect.is(setBreakpoints)) continue;
+      const marks = [];
+      for (const lineNo of effect.value) {
+        if (lineNo < 1 || lineNo > transaction.state.doc.lines) continue;
+        const line = transaction.state.doc.line(lineNo);
+        marks.push(Decoration.line({ class: 'cm-breakpoint-line', attributes: { 'data-breakpoint': String(lineNo) } }).range(line.from));
+      }
+      next = marks.length === 0 ? Decoration.none : Decoration.set(marks, true);
+    }
+    return next;
+  },
+  provide: (field) => EditorView.decorations.from(field),
+});
 
 const highlightField = StateField.define<DecorationSet>({
   create() {
@@ -156,13 +186,22 @@ const editorTheme = EditorView.theme({
     backgroundColor: 'rgba(224, 122, 95, 0.4)',
     borderRadius: '3px',
   },
+  '.cm-breakpoint-line': {
+    backgroundColor: 'rgba(224, 122, 95, 0.16)',
+    boxShadow: 'inset 3px 0 0 #e07a5f',
+  },
+  '.cm-lineNumbers .cm-gutterElement': {
+    cursor: 'pointer',
+  },
 });
 
-export function LispEditor({ source, highlight, onChange }: EditorProps) {
+export function LispEditor({ source, highlight, breakpoints, onToggleBreakpoint, onChange }: EditorProps) {
   const hostRef = useRef<HTMLDivElement | null>(null);
   const viewRef = useRef<EditorView | null>(null);
   const onChangeRef = useRef(onChange);
+  const onToggleRef = useRef(onToggleBreakpoint);
   onChangeRef.current = onChange;
+  onToggleRef.current = onToggleBreakpoint;
 
   useEffect(() => {
     const parent = hostRef.current;
@@ -172,7 +211,16 @@ export function LispEditor({ source, highlight, onChange }: EditorProps) {
       state: EditorState.create({
         doc: source,
         extensions: [
-          lineNumbers(),
+          breakpointField,
+          lineNumbers({
+            domEventHandlers: {
+              mousedown(view, line, event) {
+                event.preventDefault();
+                onToggleRef.current(view.state.doc.lineAt(line.from).number);
+                return true;
+              },
+            },
+          }),
           highlightActiveLine(),
           history(),
           indentOnInput(),
@@ -222,6 +270,12 @@ export function LispEditor({ source, highlight, onChange }: EditorProps) {
       ],
     });
   }, [highlight]);
+
+  useEffect(() => {
+    const view = viewRef.current;
+    if (!view) return;
+    view.dispatch({ effects: setBreakpoints.of(breakpoints) });
+  }, [breakpoints, source]);
 
   return <div ref={hostRef} className="editor-host" data-testid="editor" />;
 }

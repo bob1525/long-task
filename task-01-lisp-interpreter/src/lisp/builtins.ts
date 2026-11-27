@@ -1,5 +1,5 @@
 import { LispError } from './error';
-import { displayString, printValue } from './print';
+import { displayString, printNumber, printValue } from './print';
 import type { BuiltinCtx, Env, SourceSpan, Value } from './types';
 import { FALSE, isProperList, NIL, TRUE, typeName, valuesEq, valuesEqual, VOID } from './value';
 
@@ -19,6 +19,21 @@ function expectNum(value: Value, name: string, span: SourceSpan): number {
     throw new LispError('runtime', `${name} 的参数不是有限数字`, span);
   }
   return value.value;
+}
+
+function expectString(value: Value, name: string, span: SourceSpan): string {
+  if (value.kind !== 'string') {
+    throw new LispError('type', `${name} 的参数期望字符串，实际得到的是${typeName(value)}`, span);
+  }
+  return value.value;
+}
+
+function expectInt(value: Value, name: string, span: SourceSpan): number {
+  const number = expectNum(value, name, span);
+  if (!Number.isInteger(number)) {
+    throw new LispError('type', `${name} 的参数必须是整数`, span);
+  }
+  return number;
 }
 
 function finite(value: number, name: string, span: SourceSpan): Value {
@@ -230,5 +245,94 @@ export function installBuiltins(env: Env): void {
     arity(args, 0, 0, 'newline', ctx.span);
     ctx.output.push('\n');
     return VOID;
+  });
+
+  defineBuiltin(env, 'apply', (_args, ctx) => {
+    throw new LispError('runtime', 'apply 应由求值器展开', ctx.span);
+  });
+  defineBuiltin(env, 'string-length', (args, ctx) => {
+    arity(args, 1, 1, 'string-length', ctx.span);
+    return { kind: 'number', value: expectString(args[0]!, 'string-length', ctx.span).length };
+  });
+  defineBuiltin(env, 'string-append', (args, ctx) => {
+    let text = '';
+    for (const arg of args) text += expectString(arg, 'string-append', ctx.span);
+    return { kind: 'string', value: text };
+  });
+  defineBuiltin(env, 'substring', (args, ctx) => {
+    arity(args, 3, 3, 'substring', ctx.span);
+    const text = expectString(args[0]!, 'substring', ctx.span);
+    const start = expectInt(args[1]!, 'substring', ctx.span);
+    const end = expectInt(args[2]!, 'substring', ctx.span);
+    if (start < 0 || end < start || end > text.length) {
+      throw new LispError('runtime', 'substring 的范围超出字符串', ctx.span);
+    }
+    return { kind: 'string', value: text.slice(start, end) };
+  });
+  defineBuiltin(env, 'string->symbol', (args, ctx) => {
+    arity(args, 1, 1, 'string->symbol', ctx.span);
+    return { kind: 'symbol', name: expectString(args[0]!, 'string->symbol', ctx.span) };
+  });
+  defineBuiltin(env, 'symbol->string', (args, ctx) => {
+    arity(args, 1, 1, 'symbol->string', ctx.span);
+    const value = args[0]!;
+    if (value.kind !== 'symbol') {
+      throw new LispError('type', `symbol->string 的参数期望符号，实际得到的是${typeName(value)}`, ctx.span);
+    }
+    return { kind: 'string', value: value.name };
+  });
+  defineBuiltin(env, 'number->string', (args, ctx) => {
+    arity(args, 1, 1, 'number->string', ctx.span);
+    return { kind: 'string', value: printNumber(expectNum(args[0]!, 'number->string', ctx.span)) };
+  });
+  defineBuiltin(env, 'list-ref', (args, ctx) => {
+    arity(args, 2, 2, 'list-ref', ctx.span);
+    const index = expectInt(args[1]!, 'list-ref', ctx.span);
+    if (index < 0) throw new LispError('runtime', 'list-ref 的索引不能是负数', ctx.span);
+    let current = args[0]!;
+    const seen = new Set<number>();
+    for (let left = index; left > 0; left -= 1) {
+      if (current.kind !== 'pair') throw new LispError('runtime', 'list-ref 的索引超出列表长度', ctx.span);
+      if (seen.has(current.id)) throw new LispError('runtime', 'list-ref 遇到循环列表', ctx.span);
+      seen.add(current.id);
+      current = current.cdr;
+    }
+    if (current.kind !== 'pair') throw new LispError('runtime', 'list-ref 的索引超出列表长度', ctx.span);
+    return current.car;
+  });
+  defineBuiltin(env, 'assoc', (args, ctx) => {
+    arity(args, 2, 2, 'assoc', ctx.span);
+    const key = args[0]!;
+    let current = args[1]!;
+    const seen = new Set<number>();
+    while (current.kind === 'pair') {
+      if (seen.has(current.id)) throw new LispError('runtime', 'assoc 遇到循环列表', ctx.span);
+      seen.add(current.id);
+      if (current.car.kind !== 'pair') {
+        throw new LispError('type', `assoc 的列表元素必须是点对，实际得到的是${typeName(current.car)}`, ctx.span);
+      }
+      if (valuesEqual(key, current.car.car)) return current.car;
+      current = current.cdr;
+    }
+    if (current.kind !== 'nil') {
+      throw new LispError('type', `assoc 期望真列表，实际得到的是${typeName(current)}`, ctx.span);
+    }
+    return FALSE;
+  });
+  defineBuiltin(env, 'member', (args, ctx) => {
+    arity(args, 2, 2, 'member', ctx.span);
+    const key = args[0]!;
+    let current = args[1]!;
+    const seen = new Set<number>();
+    while (current.kind === 'pair') {
+      if (seen.has(current.id)) throw new LispError('runtime', 'member 遇到循环列表', ctx.span);
+      seen.add(current.id);
+      if (valuesEqual(key, current.car)) return current;
+      current = current.cdr;
+    }
+    if (current.kind !== 'nil') {
+      throw new LispError('type', `member 期望真列表，实际得到的是${typeName(current)}`, ctx.span);
+    }
+    return FALSE;
   });
 }

@@ -5,6 +5,9 @@ export type Token =
   | { kind: 'lparen'; span: SourceSpan }
   | { kind: 'rparen'; span: SourceSpan }
   | { kind: 'quote'; span: SourceSpan }
+  | { kind: 'quasiquote'; span: SourceSpan }
+  | { kind: 'unquote'; span: SourceSpan }
+  | { kind: 'unquote-splicing'; span: SourceSpan }
   | { kind: 'dot'; span: SourceSpan }
   | { kind: 'number'; value: number; span: SourceSpan }
   | { kind: 'boolean'; value: boolean; span: SourceSpan }
@@ -79,10 +82,21 @@ export function lex(source: string): LexResult {
       continue;
     }
 
-    if (ch === '`' || ch === ',') {
+    if (ch === '`') {
       bump();
-      const label = ch === '`' ? '不支持准引用语法' : '不支持逗号语法';
-      throw new LispError('syntax', label, { start, end: pos() });
+      tokens.push({ kind: 'quasiquote', span: { start, end: pos() } });
+      continue;
+    }
+
+    if (ch === ',') {
+      bump();
+      if (source[index] === '@') {
+        bump();
+        tokens.push({ kind: 'unquote-splicing', span: { start, end: pos() } });
+      } else {
+        tokens.push({ kind: 'unquote', span: { start, end: pos() } });
+      }
+      continue;
     }
 
     if (ch === '"') {

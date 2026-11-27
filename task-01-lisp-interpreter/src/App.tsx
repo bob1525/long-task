@@ -1,4 +1,4 @@
-import { useMemo, useRef, useState } from 'react';
+import { useEffect, useMemo, useRef, useState } from 'react';
 import { LispEditor } from './Editor';
 import { examples } from './examples';
 import { Session } from './lisp/session';
@@ -32,15 +32,50 @@ function shouldRestart(session: Session): boolean {
   return atEnd && (status === 'done' || status === 'error');
 }
 
+const HASH_PREFIX = '#src=';
+
+function rawHash(): string {
+  const href = window.location.href;
+  const index = href.indexOf('#');
+  return index === -1 ? '' : href.slice(index);
+}
+
+function readSharedSource(): string | null {
+  const hash = rawHash();
+  if (!hash.startsWith(HASH_PREFIX)) return null;
+  try {
+    const text = decodeURIComponent(hash.slice(HASH_PREFIX.length));
+    return text.length > 0 ? text : null;
+  } catch {
+    return null;
+  }
+}
+
+function writeSharedSource(text: string): void {
+  const next = `${HASH_PREFIX}${encodeURIComponent(text)}`;
+  if (rawHash() === next) return;
+  window.history.replaceState(null, '', `${window.location.pathname}${window.location.search}${next}`);
+}
+
+function exampleIdFor(text: string): string {
+  return examples.find((item) => item.source === text)?.id ?? 'shared';
+}
+
 export function App() {
-  const initial = examples[0]!;
-  const sessionRef = useRef<Session>(new Session(initial.source));
-  const sourceRef = useRef(initial.source);
+  const shared = readSharedSource();
+  const initialSource = shared ?? examples[0]!.source;
+  const initialId = exampleIdFor(initialSource);
+  const sessionRef = useRef<Session>(new Session(initialSource));
+  const sourceRef = useRef(initialSource);
   const dirtyRef = useRef(false);
   const runningRef = useRef(false);
   const tokenRef = useRef(0);
-  const [source, setSource] = useState(initial.source);
-  const [exampleId, setExampleId] = useState(initial.id);
+  const breakpointsRef = useRef<Set<number>>(new Set());
+  const breakpointHitRef = useRef<number | null>(null);
+  const [source, setSource] = useState(initialSource);
+  const [exampleId, setExampleId] = useState(initialId);
+  const [breakpoints, setBreakpoints] = useState<number[]>([]);
+  const [breakpointHit, setBreakpointHit] = useState<number | null>(null);
   const [snap, setSnap] = useState<Snapshot>(sessionRef.current.snapshot);
   const [meta, setMeta] = useState({ index: 0, length: 1, dropped: 0 });
   const [dirty, setDirty] = useState(false);
@@ -54,6 +89,29 @@ export function App() {
     setMeta({ index: session.cursor, length: session.history.length, dropped: session.droppedSteps });
   }
 
+  function rememberBreakpoints(lines: Set<number>): void {
+    breakpointsRef.current = lines;
+    setBreakpoints([...lines].sort((left, right) => left - right));
+  }
+
+  function clearHit(): void {
+    if (breakpointHitRef.current === null) return;
+    breakpointHitRef.current = null;
+    setBreakpointHit(null);
+  }
+
+  function onToggleBreakpoint(line: number): void {
+    const next = new Set(breakpointsRef.current);
+    if (next.has(line)) next.delete(line);
+    else next.add(line);
+    rememberBreakpoints(next);
+    if (breakpointHitRef.current !== null && !next.has(breakpointHitRef.current)) clearHit();
+  }
+
+  useEffect(() => {
+    writeSharedSource(sourceRef.current);
+  }, []);
+
   function onEdit(text: string): void {
     if (text === sourceRef.current) return;
     tokenRef.current += 1;
@@ -63,6 +121,8 @@ export function App() {
     setSource(text);
     dirtyRef.current = true;
     setDirty(true);
+    clearHit();
+    writeSharedSource(text);
   }
 
   function loadExample(id: string): void {
@@ -78,6 +138,9 @@ export function App() {
     setExampleId(id);
     setPinnedId(null);
     setUiError(null);
+    rememberBreakpoints(new Set());
+    clearHit();
+    writeSharedSource(example.source);
     sessionRef.current = new Session(example.source);
     publish();
   }
@@ -90,18 +153,21 @@ export function App() {
     setDirty(false);
     setPinnedId(null);
     setUiError(null);
+    clearHit();
     sessionRef.current = new Session(sourceRef.current);
     publish();
   }
 
   function onBack(): void {
     if (runningRef.current) return;
+    clearHit();
     sessionRef.current.stepBack();
     publish();
   }
 
   function onStep(): void {
     if (runningRef.current) return;
+    clearHit();
     if (dirtyRef.current) {
       sessionRef.current = new Session(sourceRef.current);
       dirtyRef.current = false;
@@ -125,12 +191,18 @@ export function App() {
     runningRef.current = true;
     setRunning(true);
     setUiError(null);
+    let skipLine: number | null = null;
+    const startLine = sessionRef.current.snapshot.currentSpan?.start.line ?? null;
+    if (breakpointHitRef.current !== null && startLine === breakpointHitRef.current) skipLine = startLine;
+    breakpointHitRef.current = null;
+    setBreakpointHit(null);
     try {
       if (dirtyRef.current || shouldRestart(sessionRef.current)) {
         sessionRef.current = new Session(sourceRef.current);
         dirtyRef.current = false;
         setDirty(false);
         setPinnedId(null);
+        skipLine = null;
         publish();
       }
       while (tokenRef.current === token) {
@@ -144,6 +216,19 @@ export function App() {
             break;
           }
           session.stepForward();
+          const next = session.snapshot;
+          if (next.status === 'done' || next.status === 'error') {
+            finished = true;
+            break;
+          }
+          const line = next.currentSpan?.start.line ?? null;
+          if (line !== null && breakpointsRef.current.has(line) && line !== skipLine) {
+            breakpointHitRef.current = line;
+            setBreakpointHit(line);
+            finished = true;
+            break;
+          }
+          if (line !== skipLine) skipLine = null;
         }
         if (tokenRef.current !== token) return;
         publish();
@@ -174,7 +259,12 @@ export function App() {
   const chain = chainFrom(selectedId, snap.frames);
   const historyStart = Math.max(0, meta.index - 4);
   const historyWindow = sessionRef.current.history.slice(historyStart, historyStart + 9);
-  const example = examples.find((item) => item.id === exampleId) ?? initial;
+  const example = examples.find((item) => item.id === exampleId) ?? {
+    id: 'shared',
+    title: '分享的程序',
+    blurb: '这个程序来自地址栏。改完之后地址会跟着变，把链接发给别人就能恢复同一段代码。',
+    source,
+  };
   const atEnd = meta.index >= meta.length - 1;
   const terminal = snap.status === 'done' || snap.status === 'error';
   const stepDisabled = running || (!dirty && atEnd && terminal);
@@ -196,6 +286,7 @@ export function App() {
           <label>
             示例
             <select data-testid="example-select" value={exampleId} onChange={(event) => loadExample(event.target.value)}>
+              {exampleId === 'shared' && <option value="shared">分享的程序</option>}
               {examples.map((item) => (
                 <option key={item.id} value={item.id}>
                   {item.title}
@@ -224,6 +315,19 @@ export function App() {
           代码已修改，下一次单步或连续执行会从头开始。
         </p>
       )}
+      <p className="share" data-testid="share-link">
+        当前程序写在地址栏 <code>#src=</code> 后面，打开这个链接可以恢复。
+      </p>
+      {breakpoints.length > 0 && (
+        <p className="breakpoints" data-testid="breakpoint-list">
+          断点行：{breakpoints.join('、')}。再点同一行号取消。连续执行遇到断点会停下。
+        </p>
+      )}
+      {breakpointHit !== null && !running && (
+        <p className="breakpoint" data-testid="breakpoint-hit" data-line={breakpointHit}>
+          断点：第 {breakpointHit} 行。再次连续执行会从这里继续。
+        </p>
+      )}
       {uiError && (
         <p className="error" role="alert">
           界面捕获到异常：{uiError}
@@ -239,7 +343,13 @@ export function App() {
               {meta.index < meta.length - 1 && <em className="badge">回溯</em>}
             </span>
           </header>
-          <LispEditor source={source} highlight={highlight} onChange={onEdit} />
+          <LispEditor
+            source={source}
+            highlight={highlight}
+            breakpoints={breakpoints}
+            onToggleBreakpoint={onToggleBreakpoint}
+            onChange={onEdit}
+          />
         </section>
 
         <section className="side">

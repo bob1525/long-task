@@ -250,3 +250,74 @@ test('非尾失控递归会停住，之后阶乘仍能运行', async ({ page }) 
   await runToEnd(page);
   await expect(page.getByTestId('result')).toHaveText('3628800');
 });
+
+async function clickTimes(page: Page, testId: string, times: number): Promise<void> {
+  await page.getByTestId(testId).evaluate((button, count) => {
+    const target = button as HTMLButtonElement;
+    for (let index = 0; index < count; index += 1) target.click();
+  }, times);
+}
+
+test('点击行号设置断点，连续执行会停在该行', async ({ page }) => {
+  await page.goto('/');
+  await replaceEditor(page, '(define (f n)\n  n)\n(f 1)\n');
+  await page.locator('.cm-lineNumbers .cm-gutterElement').filter({ hasText: /^2$/ }).click();
+  await expect(page.getByTestId('breakpoint-list')).toContainText('2');
+  await expect(page.locator('[data-breakpoint="2"]')).toBeVisible();
+  await page.getByTestId('btn-run').click();
+  await expect(page.getByTestId('breakpoint-hit')).toHaveAttribute('data-line', '2');
+  await expect(page.getByTestId('status')).toHaveAttribute('data-status', 'running');
+  await expect(page.getByTestId('current-expr')).toHaveText('n');
+  await expect(page.getByTestId('call-stack')).toContainText('f');
+  await expect(page.getByTestId('result')).toHaveText('');
+  await page.getByTestId('btn-run').click();
+  await expect(page.getByTestId('status')).toHaveAttribute('data-status', 'done', { timeout: 30_000 });
+  await expect(page.getByTestId('result')).toHaveText('1');
+});
+
+test('单步后退 200 步恢复环境链和调用栈', async ({ page }) => {
+  test.setTimeout(60_000);
+  await page.goto('/');
+  await replaceEditor(page, '(define (f n)\n  (if (= n 0) 0 (+ 1 (f (- n 1)))))\n(f 40)\n');
+  await stepUntilStack(page, 'f(');
+  const mark = await page.getByTestId('step-index').innerText();
+  const expr = await page.getByTestId('current-expr').innerText();
+  const stack = await page.getByTestId('call-stack').innerText();
+  const env = await page.getByTestId('env-chain').innerText();
+  await clickTimes(page, 'btn-step', 200);
+  await expect(page.getByTestId('step-index')).toHaveText(String(Number(mark) + 200));
+  await clickTimes(page, 'btn-back', 200);
+  await expect(page.getByTestId('step-index')).toHaveText(mark);
+  expect(await page.getByTestId('current-expr').innerText()).toBe(expr);
+  expect(await page.getByTestId('call-stack').innerText()).toBe(stack);
+  expect(await page.getByTestId('env-chain').innerText()).toBe(env);
+});
+
+test('参数错误会在编辑器里高亮出错位置', async ({ page }) => {
+  await page.goto('/');
+  await replaceEditor(page, '(list-ref \'(a b) 9)\n');
+  await page.getByTestId('btn-run').click();
+  await expect(page.getByTestId('error')).toContainText('运行时错误');
+  await expect(page.getByTestId('error')).toContainText('索引');
+  await expect(page.getByTestId('error')).toHaveAttribute('data-line', '1');
+  await expect(page.getByTestId('error')).toHaveAttribute('data-column', '1');
+  await expect(page.locator('.cm-eval-error')).toBeVisible();
+});
+
+test('地址栏可以分享并恢复当前程序', async ({ page }) => {
+  const source = '(define (add a b) (+ a b))\n(add 20 22)\n';
+  await page.goto(`/#src=${encodeURIComponent(source)}`);
+  await expect(page.getByTestId('editor')).toContainText('(add 20 22)');
+  await expect(page.getByTestId('example-select')).toHaveValue('shared');
+  await runToEnd(page);
+  await expect(page.getByTestId('result')).toHaveText('42');
+  const url = page.url();
+  expect(decodeURIComponent(url)).toContain('(add 20 22)');
+  const restored = await page.context().newPage();
+  await restored.goto(url);
+  await expect(restored.getByTestId('editor')).toContainText('(add 20 22)');
+  await restored.getByTestId('btn-run').click();
+  await expect(restored.getByTestId('status')).toHaveAttribute('data-status', 'done', { timeout: 30_000 });
+  await expect(restored.getByTestId('result')).toHaveText('42');
+  await restored.close();
+});
