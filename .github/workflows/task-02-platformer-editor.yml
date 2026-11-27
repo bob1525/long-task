@@ -1,0 +1,57 @@
+name: task-02 platformer editor
+
+on:
+  pull_request:
+    paths:
+      - 'task-02-platformer-editor/**'
+      - '.github/workflows/task-02-platformer-editor.yml'
+
+concurrency:
+  group: task-02-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    defaults:
+      run:
+        working-directory: task-02-platformer-editor
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '22'
+          cache: npm
+          cache-dependency-path: task-02-platformer-editor/package-lock.json
+
+      - name: Install
+        run: npm ci
+
+      - name: Unit tests
+        run: npm test
+
+      - name: Typecheck
+        run: npm run typecheck
+
+      - name: Build
+        run: npm run build
+
+      - name: Install Playwright
+        run: npx playwright install --with-deps chromium
+
+      - name: End-to-end tests
+        run: npx playwright test
+
+      - name: Upload Playwright report and screenshots
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: playwright-report
+          path: |
+            task-02-platformer-editor/playwright-report
+            task-02-platformer-editor/test-results
+            task-02-platformer-editor/e2e-screenshots
+          if-no-files-found: warn
+          retention-days: 14
