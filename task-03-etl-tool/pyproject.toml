@@ -29,6 +29,6 @@ branch = true
 source = ["etl_tool/transform"]
 
 [tool.coverage.report]
-fail_under = 80
+fail_under = 85
 show_missing = true
 skip_covered = false

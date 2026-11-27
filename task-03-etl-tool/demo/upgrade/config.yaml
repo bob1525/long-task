@@ -1,0 +1,110 @@
+name: customer-upgrade
+extract:
+  type: csv
+  path: customers.csv
+  filter:
+    field: status
+    op: eq
+    value: active
+transform:
+  rules:
+    - name: normalize_name
+      type: string
+      field: full_name
+      ops: [trim, title]
+    - name: normalize_email
+      type: string
+      field: email
+      ops: [trim, lower]
+    - name: validate_contact
+      type: validate
+      checks:
+        - field: email
+          required: true
+        - field: email
+          regex: '^[^@\s]+@[^@\s]+\.[^@\s]+$'
+        - field: full_name
+          required: true
+    - name: cast_types
+      type: cast
+      fields:
+        id: int
+        age: int
+        price: float
+        qty: int
+    - name: validate_ranges
+      type: validate
+      checks:
+        - field: age
+          min: 0
+          max: 120
+        - field: price
+          min: 0
+        - field: status
+          enum: [active, ignore]
+    - name: line_total
+      type: expression
+      target: line_total
+      expr: price * qty
+    - name: unit_price
+      type: expression
+      target: unit_price
+      expr: price / qty
+    - name: tier
+      type: conditional
+      target: tier
+      when:
+        - if: line_total >= 1000
+          then: gold
+        - if: line_total >= 100
+          then: silver
+      else: bronze
+    - name: full_address
+      type: merge
+      fields: [street, city, zip]
+      target: address
+      separator: ", "
+    - name: split_name
+      type: split
+      field: full_name
+      separator: " "
+      targets: [first_name, last_name]
+    - name: country_lookup
+      type: lookup
+      keys: [city]
+      from:
+        type: csv
+        path: cities.csv
+      value: country
+      target: country
+      on_miss: default
+      default: Unknown
+    - name: dedup_id
+      type: dedup
+      keys: [id]
+      keep: first
+load:
+  batch_size: 50
+  retry:
+    attempts: 2
+    backoff_seconds: 0
+    max_backoff_seconds: 0
+  targets:
+    - type: csv
+      path: ../../demo-output-upgrade/customers.csv
+      mode: overwrite
+    - type: json
+      path: ../../demo-output-upgrade/customers.json
+      mode: overwrite
+    - type: sqlite
+      path: ../../demo-output-upgrade/customers.db
+      table: customers
+      mode: upsert
+      primary_key: [id]
+error_handling:
+  checkpoint_path: ../../demo-output-upgrade/checkpoint.json
+  error_report_path: ../../demo-output-upgrade/errors.json
+  log_path: ../../demo-output-upgrade/etl.log
+monitor:
+  progress: true
+  report_path: ../../demo-output-upgrade/report.json

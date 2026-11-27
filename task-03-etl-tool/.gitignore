@@ -4,6 +4,7 @@ __pycache__/
 htmlcov/
 reports/
 demo-output/
+demo-output-upgrade/
 *.pyc
 *.pyo
 .mypy_cache/

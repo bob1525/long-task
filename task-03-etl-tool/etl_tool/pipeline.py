@@ -5,10 +5,11 @@ from __future__ import annotations
 import hashlib
 import json
 import logging
-from dataclasses import dataclass
+import time
+from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from etl_tool.config import JobConfig, load_config_file, normalize_config
 from etl_tool.errors import CheckpointError, ConfigError, LoadError, TransformError
@@ -36,6 +37,15 @@ class RunHooks:
     """Test hooks. interrupt_after_loaded stops after a committed window."""
 
     interrupt_after_loaded: int | None = None
+    fail_commits: int = 0
+    after_record: Callable[[int], None] | None = None
+    sleep: Callable[[float], None] | None = None
+
+    def consume_commit_failure(self) -> bool:
+        if self.fail_commits > 0:
+            self.fail_commits -= 1
+            return True
+        return False
 
 
 @dataclass
@@ -52,6 +62,9 @@ class RunResult:
     report_path: Path
     checkpoint_path: Path
     duration_seconds: float
+    dry_run: bool = False
+    would_load: int = 0
+    samples: list[dict[str, Any]] = field(default_factory=list)
 
 
 def run_config_file(
@@ -61,10 +74,13 @@ def run_config_file(
     hooks: RunHooks | None = None,
     board: StatusBoard | None = None,
     progress: bool | None = None,
+    dry_run: bool = False,
 ) -> RunResult:
     raw = load_config_file(path)
     config = normalize_config(raw, path.parent)
-    return run_job(config, resume=resume, hooks=hooks, board=board, progress=progress)
+    return run_job(
+        config, resume=resume, hooks=hooks, board=board, progress=progress, dry_run=dry_run
+    )
 
 
 def run_mapping(
@@ -75,9 +91,12 @@ def run_mapping(
     hooks: RunHooks | None = None,
     board: StatusBoard | None = None,
     progress: bool | None = None,
+    dry_run: bool = False,
 ) -> RunResult:
     config = normalize_config(data, base_dir)
-    return run_job(config, resume=resume, hooks=hooks, board=board, progress=progress)
+    return run_job(
+        config, resume=resume, hooks=hooks, board=board, progress=progress, dry_run=dry_run
+    )
 
 
 def run_job(
@@ -87,6 +106,7 @@ def run_job(
     hooks: RunHooks | None = None,
     board: StatusBoard | None = None,
     progress: bool | None = None,
+    dry_run: bool = False,
 ) -> RunResult:
     source = open_source(config.extract)
     fingerprint = _fingerprint(config, source.fingerprint())
@@ -116,12 +136,15 @@ def run_job(
     generator = None
     run_started = 0.0
     baseline_elapsed = 0.0
+    run_meta: dict[str, Any] = {"would_load": 0, "samples": []}
 
     def elapsed() -> float:
         return baseline_elapsed + (_clock() - run_started)
 
     try:
-        if resume:
+        if dry_run:
+            resume = False
+        if not dry_run and resume:
             loaded = journal.load_last()
             if loaded is None:
                 raise CheckpointError(f"no checkpoint found at {journal.log_path}")
@@ -141,7 +164,7 @@ def run_job(
                 end_index=state.end_index,
             )
             engine.restore(state.rule_stats)
-        else:
+        elif not dry_run:
             journal.clear()
             outputs.prepare(fresh=True)
             state.index_bases = outputs.index_bases()
@@ -168,6 +191,83 @@ def run_job(
             window_failures: list[dict[str, Any]] = []
             dirty = False
 
+            holds = engine.holds_until_end()
+            deferred: list[tuple[int, dict[str, Any], dict[str, Any]]] = []
+
+            def commit_records(records: list[dict[str, Any]], indices: list[int]) -> None:
+                if dry_run:
+                    return
+                delay = config.retry_backoff_seconds
+                for attempt in range(1, config.retry_attempts + 1):
+                    try:
+                        if hooks.consume_commit_failure():
+                            raise LoadError("injected load failure", target="hook")
+                        outputs.commit(records, indices)
+                        return
+                    except LoadError as exc:
+                        if attempt >= config.retry_attempts:
+                            raise
+                        logger.warning(
+                            "load attempt %s/%s failed: %s",
+                            attempt,
+                            config.retry_attempts,
+                            exc,
+                        )
+                        _pause(hooks, delay)
+                        delay = min(delay * 2, config.retry_max_backoff_seconds)
+
+            def remember_sample(clean: dict[str, Any]) -> None:
+                if len(run_meta["samples"]) < 5:
+                    run_meta["samples"].append(clean)
+
+            def accept_clean(index: int, original: dict[str, Any], clean: dict[str, Any]) -> None:
+                window_ok.append((index, original, clean))
+                remember_sample(clean)
+
+            def resolve_deferred() -> None:
+                waiting = list(deferred)
+                deferred.clear()
+                for index, original, transformed in waiting:
+                    loser = engine.losing_dedup(transformed)
+                    if loser is not None:
+                        for stats in engine.stats:
+                            if stats.name == loser.name:
+                                stats.rows_failed += 1
+                        state.failed += 1
+                        window_failures.append(
+                            _failure(
+                                index=index,
+                                stage="transform",
+                                rule=loser.name,
+                                rule_type=loser.type,
+                                target=None,
+                                error=(
+                                    f"{loser.name}: duplicate key {loser.stamped_key(transformed)!r}; "
+                                    "keeping the last record"
+                                ),
+                                record=original,
+                            )
+                        )
+                        continue
+                    try:
+                        clean = sanitize(transformed)
+                    except LoadError as exc:
+                        state.failed += 1
+                        window_failures.append(
+                            _failure(
+                                index=index,
+                                stage="load",
+                                rule=None,
+                                rule_type=None,
+                                target=exc.target,
+                                error=str(exc),
+                                record=original,
+                                transformed=transformed,
+                            )
+                        )
+                    else:
+                        accept_clean(index, original, clean)
+
             def flush() -> str | None:
                 nonlocal dirty
                 if not dirty:
@@ -175,11 +275,13 @@ def run_job(
                 end_index = last_index + 1
                 batch_id = f"{state.end_index}-{end_index}"
                 loaded_rows = 0
-                if window_ok:
+                if window_ok and dry_run:
+                    run_meta["would_load"] += len(window_ok)
+                elif window_ok:
                     records = [item[2] for item in window_ok]
                     indices = [item[0] for item in window_ok]
                     try:
-                        outputs.commit(records, indices)
+                        commit_records(records, indices)
                         loaded_rows = len(records)
                     except LoadError as exc:
                         state.failed_batches.append(
@@ -190,6 +292,7 @@ def run_job(
                                 "error": str(exc),
                                 "rolled_back": True,
                                 "retried_record_by_record": True,
+                                "attempts": config.retry_attempts,
                                 "size": len(records),
                                 "indices": indices,
                                 "records": [snapshot(record) for record in records],
@@ -198,7 +301,7 @@ def run_job(
                         logger.warning("load batch %s rolled back: %s", batch_id, exc)
                         for index, original, record in window_ok:
                             try:
-                                outputs.commit([record], [index])
+                                commit_records([record], [index])
                             except LoadError as row_error:
                                 state.failed += 1
                                 window_failures.append(
@@ -217,19 +320,29 @@ def run_job(
                             else:
                                 loaded_rows += 1
                 state.loaded += loaded_rows
-                state.success = state.loaded
+                state.success = run_meta["would_load"] if dry_run else state.loaded
                 state.failures.extend(window_failures)
                 state.end_index = end_index
                 state.elapsed_seconds = elapsed()
                 state.rule_stats = engine.snapshot()
-                state.sizes = outputs.sizes()
-                state.index_bases = outputs.index_bases()
                 state.status = "running"
-                journal.append(state)
+                if not dry_run:
+                    state.sizes = outputs.sizes()
+                    state.index_bases = outputs.index_bases()
+                    journal.append(state)
                 # The JSON array is rebuilt once, in the finalizer. The jsonl
                 # journal is already durable, so rewriting the array on every
                 # batch would copy the whole output again.
-                _write_outputs(config, state, resumed_from, "running", None)
+                _write_outputs(
+                    config,
+                    state,
+                    resumed_from,
+                    "running",
+                    None,
+                    dry_run=dry_run,
+                    would_load=run_meta["would_load"],
+                    samples=run_meta["samples"],
+                )
                 window_ok.clear()
                 window_failures.clear()
                 dirty = False
@@ -308,28 +421,37 @@ def run_job(
                                 exc.args[0] if exc.args else exc,
                             )
                         else:
-                            try:
-                                clean = sanitize(transformed)
-                            except LoadError as exc:
-                                state.failed += 1
-                                window_failures.append(
-                                    _failure(
-                                        index=raw_index,
-                                        stage="load",
-                                        rule=None,
-                                        rule_type=None,
-                                        target=exc.target,
-                                        error=str(exc),
-                                        record=item.record,
-                                        transformed=transformed,
-                                    )
-                                )
+                            if holds:
+                                deferred.append((raw_index, item.record, transformed))
                             else:
-                                window_ok.append((raw_index, item.record, clean))
-                pending = state.failed + state.loaded + len(window_ok)
+                                try:
+                                    clean = sanitize(transformed)
+                                except LoadError as exc:
+                                    state.failed += 1
+                                    window_failures.append(
+                                        _failure(
+                                            index=raw_index,
+                                            stage="load",
+                                            rule=None,
+                                            rule_type=None,
+                                            target=exc.target,
+                                            error=str(exc),
+                                            record=item.record,
+                                            transformed=transformed,
+                                        )
+                                    )
+                                else:
+                                    accept_clean(raw_index, item.record, clean)
+                if hooks.after_record is not None:
+                    hooks.after_record(raw_index)
+                pending = state.failed + state.loaded + len(window_ok) + len(deferred)
                 tripped = threshold.reason(state.failed, pending)
                 raw_pending = last_index + 1 - state.end_index
-                if raw_pending >= config.batch_size or tripped:
+                should_flush = (not holds) and (raw_pending >= config.batch_size or tripped)
+                if holds and tripped:
+                    resolve_deferred()
+                    should_flush = True
+                if should_flush:
                     signal = flush()
                     if signal == "interrupted":
                         status = "interrupted"
@@ -339,6 +461,8 @@ def run_job(
                         abort_reason = signal
                         break
             else:
+                if holds:
+                    resolve_deferred()
                 signal = flush()
                 if signal == "interrupted":
                     status = "interrupted"
@@ -357,12 +481,22 @@ def run_job(
             state.abort_reason = abort_reason
             state.elapsed_seconds = elapsed()
             state.rule_stats = engine.snapshot()
-            try:
-                journal.append(state)
-                outputs.materialize()
-            except Exception as exc:
-                logger.warning("could not write the final checkpoint: %s", exc)
-            _write_outputs(config, state, resumed_from, status, abort_reason)
+            if not dry_run:
+                try:
+                    journal.append(state)
+                    outputs.materialize()
+                except Exception as exc:
+                    logger.warning("could not write the final checkpoint: %s", exc)
+            _write_outputs(
+                config,
+                state,
+                resumed_from,
+                status,
+                abort_reason,
+                dry_run=dry_run,
+                would_load=run_meta["would_load"],
+                samples=run_meta["samples"],
+            )
             _publish(board, progress_display, state, engine, total, state.elapsed_seconds, force=True)
         progress_display.close()
         outputs.close()
@@ -391,6 +525,9 @@ def run_job(
         report_path=config.report_path,
         checkpoint_path=config.checkpoint_path,
         duration_seconds=state.elapsed_seconds,
+        dry_run=dry_run,
+        would_load=run_meta["would_load"],
+        samples=list(run_meta["samples"]),
     )
 
 
@@ -426,12 +563,25 @@ def _failure(
     return payload
 
 
+def _pause(hooks: RunHooks, seconds: float) -> None:
+    if seconds <= 0:
+        return
+    if hooks.sleep is not None:
+        hooks.sleep(seconds)
+        return
+    time.sleep(seconds)
+
+
 def _write_outputs(
     config: JobConfig,
     state: JobState,
     resumed_from: int,
     status: str,
     abort_reason: str | None,
+    *,
+    dry_run: bool = False,
+    would_load: int = 0,
+    samples: list[dict[str, Any]] | None = None,
 ) -> None:
     write_error_report(
         config.error_report_path,
@@ -454,6 +604,10 @@ def _write_outputs(
             failed_batch_count=len(state.failed_batches),
             abort_reason=abort_reason,
             targets=[str(target.path) for target in config.targets],
+            dry_run=dry_run,
+            would_load=would_load,
+            samples=samples or [],
+            error_samples=state.failures[:8],
         ),
     )
 

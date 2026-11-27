@@ -3,7 +3,9 @@
 from __future__ import annotations
 
 import argparse
+import json
 import logging
+import sqlite3
 import sys
 import time
 from pathlib import Path
@@ -16,6 +18,8 @@ from etl_tool.pipeline import run_config_file
 
 ROOT = Path(__file__).resolve().parents[1]
 DEMO_CONFIG = ROOT / "demo" / "config.yaml"
+UPGRADE_CONFIG = ROOT / "demo" / "upgrade" / "config.yaml"
+UPGRADE_DB = ROOT / "demo-output-upgrade" / "customers.db"
 
 
 def main(argv: list[str] | None = None) -> int:
@@ -29,8 +33,21 @@ def main(argv: list[str] | None = None) -> int:
     demo_parser = sub.add_parser("demo", help="run the bundled customer demo")
     _add_run_arguments(demo_parser, include_config=False)
 
+    upgrade_parser = sub.add_parser(
+        "demo-upgrade",
+        help="run the round-3 demo (validate, dedup, lookup, sqlite upsert)",
+    )
+    _add_run_arguments(upgrade_parser, include_config=False)
+
     args = parser.parse_args(argv)
-    config_path = DEMO_CONFIG if args.command == "demo" else Path(args.config)
+    if args.command == "demo":
+        config_path = DEMO_CONFIG
+    elif args.command == "demo-upgrade":
+        config_path = UPGRADE_CONFIG
+        if not args.resume and not args.dry_run:
+            prepare_upgrade_seed(UPGRADE_DB)
+    else:
+        config_path = Path(args.config)
     _configure_logging(getattr(args, "log_level", "INFO"))
     board = StatusBoard(config_path.stem)
     server = None
@@ -49,6 +66,7 @@ def main(argv: list[str] | None = None) -> int:
                 resume=args.resume,
                 board=board,
                 progress=not args.quiet,
+                dry_run=args.dry_run,
             )
         except (ConfigError, CheckpointError) as exc:
             print(f"error: {exc}", file=sys.stderr)
@@ -85,6 +103,11 @@ def _add_run_arguments(parser: argparse.ArgumentParser, *, include_config: bool 
         help="seconds to leave the monitor up after the job finishes",
     )
     parser.add_argument("--quiet", action="store_true", help="disable the progress line")
+    parser.add_argument(
+        "--dry-run",
+        action="store_true",
+        help="extract and transform only; do not write load targets",
+    )
     parser.add_argument("--log-level", default="INFO")
 
 
@@ -111,6 +134,30 @@ def _print_summary(result: Any) -> None:
     print(f"error_report: {result.error_report_path}")
     print(f"execution_report: {result.report_path}")
     print(f"checkpoint: {result.checkpoint_path}")
+    if result.dry_run:
+        print("dry_run: true")
+        print(f"would_load: {result.would_load}")
+        print("samples:")
+        for sample in result.samples:
+            print(json.dumps(sample, ensure_ascii=False))
+
+
+def prepare_upgrade_seed(path: Path) -> None:
+    """Reset the upgrade demo database to one placeholder row for upsert."""
+    path.parent.mkdir(parents=True, exist_ok=True)
+    if path.exists():
+        path.unlink()
+    connection = sqlite3.connect(path)
+    try:
+        connection.execute(
+            "CREATE TABLE customers (id INTEGER PRIMARY KEY, full_name TEXT, country TEXT)"
+        )
+        connection.execute(
+            "INSERT INTO customers (id, full_name, country) VALUES (1, 'Placeholder', 'Nowhere')"
+        )
+        connection.commit()
+    finally:
+        connection.close()
 
 
 if __name__ == "__main__":

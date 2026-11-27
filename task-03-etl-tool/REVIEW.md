@@ -30,3 +30,23 @@
 - SQLite 一批里出现主键冲突时，整批事务回滚，再逐行提交，只有冲突行进入 `failed_batches`（`test_load_failure_rolls_back_batch_and_keeps_good_rows`）。
 - 中断后 `--resume` 不重写已成功的行；检查点之后多出来的 CSV 尾巴和 SQLite 行会被截掉；输入变了则拒绝续跑（`test_resume_does_not_rewrite_successful_rows`、`test_resume_discards_unjournaled_output_and_rejects_changed_input`）。
 - 转换包源码里没有 `eval(` 或 `exec(`（`tests/test_no_eval.py`）。
+
+## 第三轮：校验、去重、查找、upsert 和实时进度
+
+在已经通过验收的实现上加了这些能力，原来的 44 个测试一个都没删，断言也没有放宽。新测试在 `tests/test_round3.py`。
+
+1. **校验规则。** `ValidateRule` 支持 `required`、`regex`（整段 `fullmatch`）、闭区间 `min`/`max` 和 `enum`。失败抛出 `TransformError`，错误报告里的 `rule` 就是配置里的规则名。非法正则和空枚举在构建规则时就是 `ConfigError`，不会拖到跑数据的时候。
+
+2. **去重规则。** `keep: first` 在流里直接丢掉后面的重复键。`keep: last` 给每条记录盖一个序号，等提取结束后只留下每个键的最后一条；更早的行记成该规则的失败，不会写入。这一轮发现并修了一个统计缺口：`keep: last` 的落选行是在加载前才判定的，规则的 `rows_failed` 一开始没有加上。现在在落选时补计，执行报告能看到失败行数。
+
+3. **查找规则。** 内存字典、内存行，以及 CSV/JSON 文件都能做一对一查找。数字和数字字符串归一成同一个键。找不到时可以失败，也可以写默认值。查找表里的重复键保留第一行。
+
+4. **SQLite upsert 和加载重试。** `mode: upsert` 使用 `ON CONFLICT(primary_key) DO UPDATE`。没有主键，或者把 upsert 用在 CSV/JSON 上，配置阶段就拒绝。批次提交失败会按 `load.retry` 做有限次尝试，等待时间从 `backoff_seconds` 翻倍到 `max_backoff_seconds`。次数用尽才写入 `failed_batches`，然后再逐行试。测试用钩子注入失败，不靠真的睡觉，所以能断言等待序列是 `0.05, 0.1`。
+
+5. **`--dry-run` 和 HTML 报告。** dry-run 不调用 `prepare`，因此不会删除已有目标文件，也不会写检查点。`would_load` 和最多 5 条样例进标准输出和执行报告。每份执行报告旁边额外写一份 HTML，包含成功数、失败数、规则表和错误样例。
+
+6. **监控轮询。** 页面每 500 毫秒请求 `/api/status`，更新进度、规则表和最近错误。`test_web_status_grows_while_the_job_is_running` 在任务跑的过程中多次读这个接口，确认 `processed` 在增长，而不是只在结束时跳一次。
+
+7. **升级演示的路径写错了一层。** `demo/upgrade/config.yaml` 最初用 `../demo-output-upgrade`。配置目录已经是 `demo/upgrade`，这个相对路径落到了 `demo/demo-output-upgrade`，和命令预先种下的 `task-03-etl-tool/demo-output-upgrade/customers.db` 不是同一个文件，所以 upsert 没有打到占位行，JSON 也不在验收命令期望的目录。改成 `../../demo-output-upgrade` 之后，`id=1` 从 `Placeholder` 更新为 `Ada Lovelace`，`python -m etl_tool demo-upgrade` 的结果是成功 7、失败 6、加载 7、提取 14、过滤 1。旧的 `python -m etl_tool demo` 仍然是成功 8、失败 4。
+
+覆盖率门槛从 80% 提高到 85%，统计范围仍是 `etl_tool/transform`。转换包里仍然没有 `eval` 或 `exec`。

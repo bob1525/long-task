@@ -39,6 +39,9 @@ class JobConfig:
     web_enabled: bool
     web_host: str
     web_port: int
+    retry_attempts: int
+    retry_backoff_seconds: float
+    retry_max_backoff_seconds: float
     fingerprint_material: dict[str, Any]
 
 
@@ -83,11 +86,12 @@ def normalize_config(data: dict[str, Any], base_dir: Path) -> JobConfig:
     rules = transform.get("rules") or []
     if not isinstance(rules, list):
         raise ConfigError("transform.rules must be a list")
+    rules = [_resolve_rule_paths(rule, base_dir) for rule in rules]
 
     load = data.get("load")
     if not isinstance(load, dict):
         raise ConfigError("config.load is required")
-    targets, batch_size = _normalize_load(load, base_dir)
+    targets, batch_size, retry = _normalize_load(load, base_dir)
 
     handling = data.get("error_handling") or {}
     if not isinstance(handling, dict):
@@ -158,6 +162,9 @@ def normalize_config(data: dict[str, Any], base_dir: Path) -> JobConfig:
         web_enabled=bool(web.get("enabled", False)),
         web_host=str(web.get("host", "127.0.0.1")),
         web_port=web_port,
+        retry_attempts=retry[0],
+        retry_backoff_seconds=retry[1],
+        retry_max_backoff_seconds=retry[2],
         fingerprint_material=fingerprint_material,
     )
 
@@ -204,10 +211,13 @@ def _assign_location(normalized: dict[str, Any], extract: dict[str, Any], base_d
         normalized[choice] = extract[choice]
 
 
-def _normalize_load(load: dict[str, Any], base_dir: Path) -> tuple[list[TargetSpec], int]:
+def _normalize_load(
+    load: dict[str, Any], base_dir: Path
+) -> tuple[list[TargetSpec], int, tuple[int, float, float]]:
     batch_size = load.get("batch_size", 200)
     if isinstance(batch_size, bool) or not isinstance(batch_size, int) or batch_size < 1:
         raise ConfigError("load.batch_size must be a positive integer")
+    retry = _normalize_retry(load.get("retry"))
     if "targets" in load and "type" in load:
         raise ConfigError("load must use either type or targets, not both")
     if "targets" in load:
@@ -217,7 +227,26 @@ def _normalize_load(load: dict[str, Any], base_dir: Path) -> tuple[list[TargetSp
     else:
         raw_targets = [load]
     targets = [_normalize_target(item, base_dir) for item in raw_targets]
-    return targets, batch_size
+    return targets, batch_size, retry
+
+
+def _normalize_retry(retry: Any) -> tuple[int, float, float]:
+    if retry is None:
+        return 1, 0.0, 0.0
+    if not isinstance(retry, dict):
+        raise ConfigError("load.retry must be a mapping")
+    attempts = retry.get("attempts", 1)
+    if isinstance(attempts, bool) or not isinstance(attempts, int) or attempts < 1:
+        raise ConfigError("load.retry.attempts must be a positive integer")
+    backoff = retry.get("backoff_seconds", 0)
+    if isinstance(backoff, bool) or not isinstance(backoff, (int, float)) or backoff < 0:
+        raise ConfigError("load.retry.backoff_seconds must be a non-negative number")
+    max_backoff = retry.get("max_backoff_seconds", backoff)
+    if isinstance(max_backoff, bool) or not isinstance(max_backoff, (int, float)) or max_backoff < 0:
+        raise ConfigError("load.retry.max_backoff_seconds must be a non-negative number")
+    if float(max_backoff) < float(backoff):
+        raise ConfigError("load.retry.max_backoff_seconds must be >= backoff_seconds")
+    return int(attempts), float(backoff), float(max_backoff)
 
 
 def _normalize_target(item: Any, base_dir: Path) -> TargetSpec:
@@ -229,11 +258,15 @@ def _normalize_target(item: Any, base_dir: Path) -> TargetSpec:
     if "path" not in item:
         raise ConfigError(f"{kind} load target requires path")
     mode = str(item.get("mode", "overwrite"))
-    if mode not in {"overwrite", "append"}:
-        raise ConfigError("load mode must be overwrite or append")
+    if mode not in {"overwrite", "append", "upsert"}:
+        raise ConfigError("load mode must be overwrite, append, or upsert")
+    if mode == "upsert" and kind != "sqlite":
+        raise ConfigError("upsert mode is only supported for sqlite targets")
     primary_key = item.get("primary_key") or []
     if not isinstance(primary_key, list) or not all(isinstance(key, str) for key in primary_key):
         raise ConfigError("sqlite primary_key must be a list of column names")
+    if mode == "upsert" and not primary_key:
+        raise ConfigError("sqlite upsert requires primary_key")
     table = str(item.get("table") or "records")
     delimiter = str(item.get("delimiter", ","))
     return TargetSpec(
@@ -254,6 +287,18 @@ def _location_string(base_dir: Path, value: Any) -> str:
     if not path.is_absolute():
         path = (base_dir / path).resolve()
     return str(path)
+
+
+def _resolve_rule_paths(rule: Any, base_dir: Path) -> Any:
+    if not isinstance(rule, dict):
+        return rule
+    copied = dict(rule)
+    source = copied.get("from")
+    if str(copied.get("type", "")).lower() == "lookup" and isinstance(source, dict) and source.get("path"):
+        resolved = dict(source)
+        resolved["path"] = _location_string(base_dir, source["path"])
+        copied["from"] = resolved
+    return copied
 
 
 def _resolve_path(base_dir: Path, value: Any, default: Path | None) -> Path:

@@ -113,14 +113,51 @@ def render_page(state: dict[str, Any]) -> str:
     <h2>Rules</h2>
     <table>
       <thead><tr><th>Name</th><th>Type</th><th>Seen</th><th>Rows changed</th><th>Fields changed</th><th>Failed</th></tr></thead>
-      <tbody>{rule_rows}</tbody>
+      <tbody id="rules-body">{rule_rows}</tbody>
     </table>
     <h2>Recent errors</h2>
     <table>
       <thead><tr><th>Index</th><th>Stage</th><th>Rule / target</th><th>Error</th></tr></thead>
-      <tbody>{error_rows}</tbody>
+      <tbody id="errors-body">{error_rows}</tbody>
     </table>
   </main>
+  <script>
+    async function refreshMonitor() {{
+      const response = await fetch("/api/status", {{cache: "no-store"}});
+      const state = await response.json();
+      const status = document.getElementById("job-status");
+      status.textContent = state.status || "";
+      status.className = "status " + (state.status || "");
+      document.getElementById("success-count").textContent = state.success || 0;
+      document.getElementById("failed-count").textContent = state.failed || 0;
+      document.getElementById("loaded-count").textContent = state.loaded || 0;
+      document.getElementById("elapsed").textContent = Number(state.elapsed_seconds || 0).toFixed(2);
+      const processed = state.processed || 0;
+      const total = state.total;
+      const percent = total ? Math.max(0, Math.min(100, processed / total * 100)) : (processed ? 100 : 0);
+      document.getElementById("progress-bar").style.width = percent.toFixed(2) + "%";
+      document.getElementById("progress-label").textContent =
+        processed + " / " + (total == null ? "unknown" : total) + " (" + percent.toFixed(1) + "%)";
+      const rules = state.rules || [];
+      document.getElementById("rules-body").innerHTML = rules.map((rule) =>
+        "<tr><td>" + text(rule.name) + "</td><td>" + text(rule.type) + "</td><td>" +
+        (rule.rows_seen || 0) + "</td><td>" + (rule.rows_modified || 0) + "</td><td>" +
+        (rule.fields_modified || 0) + "</td><td>" + (rule.rows_failed || 0) + "</td></tr>"
+      ).join("") || "<tr><td colspan='6'>No rules yet.</td></tr>";
+      const errors = state.recent_errors || [];
+      document.getElementById("errors-body").innerHTML = errors.map((item) =>
+        "<tr><td>" + text(item.index) + "</td><td>" + text(item.stage) + "</td><td>" +
+        text(item.rule || item.target || "") + "</td><td>" + text(item.error) + "</td></tr>"
+      ).join("") || "<tr><td colspan='4'>No errors.</td></tr>";
+    }}
+    function text(value) {{
+      return String(value == null ? "" : value)
+        .replace(/&/g, "&amp;")
+        .replace(/</g, "&lt;")
+        .replace(/>/g, "&gt;");
+    }}
+    setInterval(refreshMonitor, 500);
+  </script>
 </body>
 </html>
 """

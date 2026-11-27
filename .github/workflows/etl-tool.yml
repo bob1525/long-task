@@ -35,10 +35,12 @@ jobs:
             --cov-report=term-missing \
             --cov-report=xml:reports/coverage.xml \
             --cov-report=html:reports/htmlcov \
-            --cov-fail-under=80
+            --cov-fail-under=85
 
       - name: Run the demo flow
-        run: python -m etl_tool demo
+        run: |
+          python -m etl_tool demo
+          python -m etl_tool demo-upgrade
 
       - name: Upload test and coverage reports
         if: always()
@@ -48,3 +50,4 @@ jobs:
           path: |
             task-03-etl-tool/reports/
             task-03-etl-tool/demo-output/
+            task-03-etl-tool/demo-output-upgrade/

@@ -6,7 +6,7 @@ from dataclasses import asdict, dataclass
 from typing import Any
 
 from etl_tool.errors import TransformError
-from etl_tool.transform.rules import Rule
+from etl_tool.transform.rules import DedupRule, Rule
 
 
 @dataclass
@@ -51,6 +51,16 @@ class Engine:
                 stats.rows_modified += 1
                 stats.fields_modified += int(changed)
         return working
+
+    def holds_until_end(self) -> bool:
+        """True when a keep-last dedup rule must see every row before loading."""
+        return any(isinstance(rule, DedupRule) and rule.keep == "last" for rule in self.rules)
+
+    def losing_dedup(self, record: dict[str, Any]) -> DedupRule | None:
+        for rule in self.rules:
+            if isinstance(rule, DedupRule) and rule.keep == "last" and not rule.keeps(record):
+                return rule
+        return None
 
     def snapshot(self) -> list[dict[str, Any]]:
         return [item.to_dict() for item in self.stats]

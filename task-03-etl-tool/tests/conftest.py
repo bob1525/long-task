@@ -5,6 +5,7 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from etl_tool.monitor.status import StatusBoard
 from etl_tool.pipeline import RunHooks, RunResult, run_mapping
 
 
@@ -19,8 +20,11 @@ def run_job(
     handling: dict[str, Any] | None = None,
     resume: bool = False,
     hooks: RunHooks | None = None,
+    board: StatusBoard | None = None,
     progress: bool = False,
     name: str = "job",
+    dry_run: bool = False,
+    retry: dict[str, Any] | None = None,
 ) -> RunResult:
     if extract is None:
         extract = {"type": "json", "records": records or []}
@@ -32,7 +36,7 @@ def run_job(
         "name": name,
         "extract": extract,
         "transform": {"rules": rules or []},
-        "load": {"batch_size": batch_size, "targets": targets},
+        "load": {"batch_size": batch_size, "targets": targets, **({"retry": retry} if retry else {})},
         "error_handling": {
             "checkpoint_path": str(tmp_path / "checkpoint.json"),
             "error_report_path": str(tmp_path / "errors.json"),
@@ -44,4 +48,4 @@ def run_job(
             "report_path": str(tmp_path / "report.json"),
         },
     }
-    return run_mapping(data, tmp_path, resume=resume, hooks=hooks)
+    return run_mapping(data, tmp_path, resume=resume, hooks=hooks, dry_run=dry_run, board=board)

@@ -241,8 +241,10 @@ class JsonTarget:
 
 class SqliteTarget:
     def __init__(self, path: Path, table: str, mode: str, primary_key: list[str]) -> None:
-        if mode not in {"overwrite", "append"}:
-            raise ConfigError(f"sqlite mode must be overwrite or append, got {mode!r}")
+        if mode not in {"overwrite", "append", "upsert"}:
+            raise ConfigError(f"sqlite mode must be overwrite, append, or upsert, got {mode!r}")
+        if mode == "upsert" and not primary_key:
+            raise ConfigError("sqlite upsert requires primary_key")
         if not table or table == "etl_loaded_index":
             raise ConfigError(f"invalid sqlite table name {table!r}")
         self.path = path
@@ -271,7 +273,7 @@ class SqliteTarget:
             """
         )
         self._load_columns()
-        if fresh and self.mode == "append":
+        if fresh and self.mode in {"append", "upsert"}:
             self.index_base = self.max_src_index() + 1
         elif fresh:
             self.index_base = 0
@@ -301,17 +303,17 @@ class SqliteTarget:
         try:
             self._ensure_table(records)
             columns = self.columns
-            sql = (
-                f"INSERT INTO {quote_ident(self.table)} "
-                f"({', '.join(quote_ident(column) for column in columns)}) "
-                f"VALUES ({', '.join('?' for _ in columns)})"
-            )
+            sql = self._insert_sql(columns)
             for record, src_index in zip(records, src_indices):
                 values = [_sqlite_cell(record.get(column)) for column in columns]
                 self.conn.execute(sql, values)
                 rowid = int(self.conn.execute("SELECT last_insert_rowid()").fetchone()[0])
                 self.conn.execute(
-                    "INSERT INTO etl_loaded_index (table_name, src_index, rowid_ref) VALUES (?, ?, ?)",
+                    """
+                    INSERT INTO etl_loaded_index (table_name, src_index, rowid_ref)
+                    VALUES (?, ?, ?)
+                    ON CONFLICT(table_name, src_index) DO UPDATE SET rowid_ref = excluded.rowid_ref
+                    """,
                     (self.table, int(src_index), rowid),
                 )
             self.conn.execute("COMMIT")
@@ -364,6 +366,25 @@ class SqliteTarget:
         cursor = self.conn.execute(f"SELECT * FROM {quote_ident(self.table)}")
         columns = [str(item[0]) for item in cursor.description]
         return [dict(zip(columns, row)) for row in cursor.fetchall()]
+
+    def _insert_sql(self, columns: list[str]) -> str:
+        quoted = ", ".join(quote_ident(column) for column in columns)
+        placeholders = ", ".join("?" for _ in columns)
+        statement = (
+            f"INSERT INTO {quote_ident(self.table)} ({quoted}) VALUES ({placeholders})"
+        )
+        if self.mode != "upsert":
+            return statement
+        conflict = ", ".join(quote_ident(key) for key in self.primary_key)
+        updates = [column for column in columns if column not in self.primary_key]
+        if updates:
+            assignments = ", ".join(
+                f"{quote_ident(column)}=excluded.{quote_ident(column)}" for column in updates
+            )
+        else:
+            key = quote_ident(self.primary_key[0])
+            assignments = f"{key}={key}"
+        return f"{statement} ON CONFLICT({conflict}) DO UPDATE SET {assignments}"
 
     def _rollback(self) -> None:
         assert self.conn is not None

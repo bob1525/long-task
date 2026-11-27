@@ -7,10 +7,13 @@ discards the working record and keeps the pipeline running.
 
 from __future__ import annotations
 
+import csv
+import json
 import math
 import re
 from abc import ABC, abstractmethod
 from datetime import date, datetime
+from pathlib import Path
 from typing import Any
 
 from etl_tool.errors import ConfigError, TransformError
@@ -314,6 +317,350 @@ class SplitRule(Rule):
         return changed
 
 
+class ValidateRule(Rule):
+    """Reject a record that misses a required value, pattern, range, or enum."""
+
+    def __init__(self, spec: dict[str, Any], index: int) -> None:
+        super().__init__(spec, index)
+        checks = spec.get("checks")
+        if checks is None:
+            checks = [
+                {
+                    key: spec[key]
+                    for key in ("field", "required", "regex", "min", "max", "enum")
+                    if key in spec
+                }
+            ]
+        if not isinstance(checks, list) or not checks:
+            raise ConfigError(f"rule {self.name}: validate requires checks")
+        self.checks: list[dict[str, Any]] = []
+        for check in checks:
+            if not isinstance(check, dict) or "field" not in check:
+                raise ConfigError(f"rule {self.name}: each check requires field")
+            compiled: dict[str, Any] = {"field": str(check["field"])}
+            if check.get("required"):
+                compiled["required"] = True
+            if "regex" in check and check["regex"] is not None:
+                try:
+                    compiled["regex"] = re.compile(str(check["regex"]))
+                except re.error as exc:
+                    raise ConfigError(f"rule {self.name}: invalid regex: {exc}") from exc
+            if "min" in check or "max" in check:
+                compiled["min"] = _bound(check.get("min"), self.name)
+                compiled["max"] = _bound(check.get("max"), self.name)
+                if compiled["min"] is None and compiled["max"] is None:
+                    raise ConfigError(f"rule {self.name}: range check needs min or max")
+            if "enum" in check:
+                choices = check["enum"]
+                if not isinstance(choices, list) or not choices:
+                    raise ConfigError(f"rule {self.name}: enum must be a non-empty list")
+                compiled["enum"] = list(choices)
+            if not any(key in compiled for key in ("required", "regex", "min", "max", "enum")):
+                raise ConfigError(
+                    f"rule {self.name}: a check needs required, regex, min/max, or enum"
+                )
+            self.checks.append(compiled)
+
+    def apply(self, record: dict[str, Any]) -> int:
+        for check in self.checks:
+            self._check(record, check)
+        return 0
+
+    def _check(self, record: dict[str, Any], check: dict[str, Any]) -> None:
+        field = check["field"]
+        present = field in record and record[field] is not None
+        value = record.get(field)
+        blank = isinstance(value, str) and value.strip() == ""
+        if check.get("required") and (not present or blank):
+            raise TransformError(
+                f"required field {field!r} is missing",
+                self.name,
+                self.type,
+            )
+        if not present or blank:
+            return
+        if "regex" in check:
+            text = value if isinstance(value, str) else str(value)
+            pattern = check["regex"]
+            if pattern.fullmatch(text) is None:
+                raise TransformError(
+                    f"field {field!r} value {value!r} does not match /{pattern.pattern}/",
+                    self.name,
+                    self.type,
+                )
+        if "min" in check or "max" in check:
+            number = _coerce_number(value, field, self)
+            if check.get("min") is not None and number < check["min"]:
+                raise TransformError(
+                    f"field {field!r} value {number} is below {check['min']}",
+                    self.name,
+                    self.type,
+                )
+            if check.get("max") is not None and number > check["max"]:
+                raise TransformError(
+                    f"field {field!r} value {number} is above {check['max']}",
+                    self.name,
+                    self.type,
+                )
+        if "enum" in check and not _enum_contains(value, check["enum"]):
+            raise TransformError(
+                f"field {field!r} value {value!r} is not in {check['enum']!r}",
+                self.name,
+                self.type,
+            )
+
+
+class DedupRule(Rule):
+    """Drop duplicate keys. `keep: first` streams; `keep: last` waits until the extract ends."""
+
+    def __init__(self, spec: dict[str, Any], index: int) -> None:
+        super().__init__(spec, index)
+        keys = spec.get("keys", spec.get("key"))
+        if isinstance(keys, str):
+            keys = [keys]
+        if not isinstance(keys, list) or not keys:
+            raise ConfigError(f"rule {self.name}: dedup requires keys")
+        self.keys = [str(key) for key in keys]
+        self.keep = str(spec.get("keep", "first"))
+        if self.keep not in {"first", "last"}:
+            raise ConfigError(f"rule {self.name}: keep must be first or last")
+        self._seen: set[tuple[Any, ...]] = set()
+        self._winner: dict[tuple[Any, ...], int] = {}
+        self._stamp: dict[int, tuple[tuple[Any, ...], int]] = {}
+        self._seq = 0
+
+    def apply(self, record: dict[str, Any]) -> int:
+        key = self.key_of(record)
+        if self.keep == "first":
+            if key in self._seen:
+                raise TransformError(
+                    f"duplicate key {key!r}; keeping the first record",
+                    self.name,
+                    self.type,
+                )
+            self._seen.add(key)
+            return 0
+        self._seq += 1
+        self._winner[key] = self._seq
+        self._stamp[id(record)] = (key, self._seq)
+        return 0
+
+    def key_of(self, record: dict[str, Any]) -> tuple[Any, ...]:
+        parts: list[Any] = []
+        for field in self.keys:
+            if field not in record or record[field] is None:
+                if self.on_missing == "fail":
+                    raise TransformError(
+                        f"missing field {field!r}",
+                        self.name,
+                        self.type,
+                    )
+            parts.append(record.get(field))
+        return tuple(parts)
+
+    def keeps(self, record: dict[str, Any]) -> bool:
+        stamped = self._stamp.get(id(record))
+        if stamped is None:
+            return True
+        key, seq = stamped
+        return self._winner.get(key) == seq
+
+    def stamped_key(self, record: dict[str, Any]) -> tuple[Any, ...]:
+        stamped = self._stamp.get(id(record))
+        if stamped is None:
+            return self.key_of(record)
+        return stamped[0]
+
+
+class LookupRule(Rule):
+    """Copy fields from an in-memory table or a CSV/JSON file."""
+
+    def __init__(self, spec: dict[str, Any], index: int) -> None:
+        super().__init__(spec, index)
+        keys = spec.get("keys", spec.get("key"))
+        if isinstance(keys, str):
+            keys = [keys]
+        if not isinstance(keys, list) or not keys:
+            raise ConfigError(f"rule {self.name}: lookup requires keys")
+        self.local_keys = [str(key) for key in keys]
+        remote = spec.get("lookup_keys", spec.get("lookup_key", self.local_keys))
+        if isinstance(remote, str):
+            remote = [remote]
+        if not isinstance(remote, list) or len(remote) != len(self.local_keys):
+            raise ConfigError(f"rule {self.name}: lookup_keys must match keys")
+        self.remote_keys = [str(key) for key in remote]
+        self.on_miss = str(spec.get("on_miss", "fail"))
+        if self.on_miss not in {"fail", "default"}:
+            raise ConfigError(f"rule {self.name}: on_miss must be fail or default")
+        if self.on_miss == "default" and "default" not in spec:
+            raise ConfigError(f"rule {self.name}: on_miss default requires default")
+        self.default = spec.get("default")
+        self.scalar = False
+        self.rows: dict[tuple[Any, ...], dict[str, Any]] = {}
+        self.field_map = self._compile_fields(spec)
+        self._load_source(spec)
+
+    def _compile_fields(self, spec: dict[str, Any]) -> list[tuple[str, str]]:
+        if "fields" in spec:
+            fields = spec["fields"]
+            if not isinstance(fields, dict) or not fields:
+                raise ConfigError(f"rule {self.name}: fields must be a mapping")
+            return [(str(src), str(dst)) for src, dst in fields.items()]
+        if "target" in spec:
+            return [(str(spec.get("value", "__value__")), str(spec["target"]))]
+        raise ConfigError(f"rule {self.name}: lookup requires target or fields")
+
+    def _load_source(self, spec: dict[str, Any]) -> None:
+        if "table" in spec and "from" in spec:
+            raise ConfigError(f"rule {self.name}: use either table or from")
+        if "table" in spec:
+            self._load_table(spec["table"])
+            return
+        if "from" not in spec:
+            raise ConfigError(f"rule {self.name}: lookup requires table or from")
+        source = spec["from"]
+        if not isinstance(source, dict):
+            raise ConfigError(f"rule {self.name}: from must be a mapping")
+        kind = str(source.get("type", "")).lower()
+        path = source.get("path")
+        if kind not in {"csv", "json"} or not path:
+            raise ConfigError(f"rule {self.name}: from needs type csv or json and path")
+        file_path = Path(str(path))
+        if not file_path.is_file():
+            raise ConfigError(f"rule {self.name}: lookup source not found: {file_path}")
+        if kind == "csv":
+            with open(file_path, encoding="utf-8-sig", newline="") as handle:
+                self._ingest_rows(list(csv.DictReader(handle)))
+            return
+        try:
+            payload = json.loads(file_path.read_text(encoding="utf-8"))
+        except json.JSONDecodeError as exc:
+            raise ConfigError(f"rule {self.name}: cannot parse lookup json: {exc}") from exc
+        self._load_table(payload)
+
+    def _load_table(self, table: Any) -> None:
+        if isinstance(table, dict):
+            if len(self.local_keys) != 1:
+                raise ConfigError(f"rule {self.name}: a lookup map needs exactly one key")
+            self.scalar = True
+            if self.field_map != [("__value__", self.field_map[0][1])] and "fields" not in self.spec:
+                pass
+            self.field_map = [("__value__", self.field_map[0][1])]
+            for key, value in table.items():
+                if isinstance(value, dict):
+                    raise ConfigError(f"rule {self.name}: lookup map values must be scalars")
+                token = (_norm_key(key),)
+                if token not in self.rows:
+                    self.rows[token] = {"__value__": value}
+            return
+        if isinstance(table, list):
+            self._ingest_rows(table)
+            return
+        raise ConfigError(f"rule {self.name}: lookup table must be a map or a list")
+
+    def _ingest_rows(self, rows: list[Any]) -> None:
+        for row in rows:
+            if not isinstance(row, dict):
+                raise ConfigError(f"rule {self.name}: lookup rows must be objects")
+            token = tuple(_norm_key(row.get(key)) for key in self.remote_keys)
+            if token not in self.rows:
+                self.rows[token] = {str(key): value for key, value in row.items()}
+
+    def apply(self, record: dict[str, Any]) -> int:
+        parts: list[Any] = []
+        for field in self.local_keys:
+            if field not in record or record[field] is None:
+                if self.on_missing == "fail":
+                    raise TransformError(
+                        f"missing field {field!r}",
+                        self.name,
+                        self.type,
+                    )
+                parts.append(None)
+            else:
+                parts.append(_norm_key(record[field]))
+        found = self.rows.get(tuple(parts))
+        if found is None and self.on_miss == "fail":
+            raise TransformError(
+                f"lookup miss for key {tuple(parts)!r}",
+                self.name,
+                self.type,
+            )
+        changed = 0
+        for src, dst in self.field_map:
+            if found is None:
+                value = self.default.get(dst, self.default.get(src)) if isinstance(self.default, dict) else self.default
+            else:
+                value = found.get(src)
+            old = record.get(dst, _MISSING)
+            record[dst] = value
+            if old is _MISSING or value_changed(old, value):
+                changed += 1
+        return changed
+
+
+def _bound(value: Any, rule_name: str) -> int | float | None:
+    if value is None:
+        return None
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        raise ConfigError(f"rule {rule_name}: min and max must be numbers")
+    return value
+
+
+def _coerce_number(value: Any, field: str, rule: Rule) -> int | float:
+    if isinstance(value, bool) or not isinstance(value, (int, float, str)):
+        raise TransformError(
+            f"field {field!r} is not a number",
+            rule.name,
+            rule.type,
+        )
+    if isinstance(value, str):
+        try:
+            number: int | float = float(value.strip())
+        except ValueError as exc:
+            raise TransformError(
+                f"field {field!r} value {value!r} is not a number",
+                rule.name,
+                rule.type,
+            ) from exc
+        if number.is_integer():
+            number = int(number)
+        return number
+    return value
+
+
+def _enum_contains(value: Any, choices: list[Any]) -> bool:
+    if value in choices:
+        return True
+    text = value.strip() if isinstance(value, str) else None
+    for choice in choices:
+        if text is not None and str(choice) == text:
+            return True
+        if isinstance(choice, str) and str(value) == choice and not isinstance(value, (dict, list)):
+            return True
+    return False
+
+
+def _norm_key(value: Any) -> Any:
+    if isinstance(value, bool) or value is None:
+        return value
+    if isinstance(value, int):
+        return ("num", str(value))
+    if isinstance(value, float) and math.isfinite(value) and value.is_integer():
+        return ("num", str(int(value)))
+    if isinstance(value, str):
+        text = value.strip()
+        if text and _integer_text(text):
+            return ("num", str(int(text)))
+        return text
+    return value
+
+
+def _integer_text(text: str) -> bool:
+    body = text[1:] if text[0] in "+-" else text
+    return body.isdigit() and body != ""
+
+
 def build_rules(specs: list[dict[str, Any]]) -> list[Rule]:
     rules: list[Rule] = []
     names: set[str] = set()
@@ -340,6 +687,9 @@ _RULES: dict[str, type[Rule]] = {
     "conditional": ConditionalRule,
     "merge": MergeRule,
     "split": SplitRule,
+    "validate": ValidateRule,
+    "dedup": DedupRule,
+    "lookup": LookupRule,
 }
 
 
