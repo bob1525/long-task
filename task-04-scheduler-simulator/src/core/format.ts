@@ -15,11 +15,12 @@ export function formatHistory(history: readonly { time: number; state: ProcessSt
 }
 
 export function sliceSignature(
-  slices: readonly { pid: number | null; start: number; end: number }[],
+  slices: readonly { pid: number | null; start: number; end: number; switch?: boolean }[],
 ): string {
   return slices
-    .map((slice) =>
-      slice.pid === null ? `空闲[${slice.start},${slice.end})` : `P${slice.pid}[${slice.start},${slice.end})`,
-    )
+    .map((slice) => {
+      if (slice.switch) return `切换[${slice.start},${slice.end})`;
+      return slice.pid === null ? `空闲[${slice.start},${slice.end})` : `P${slice.pid}[${slice.start},${slice.end})`;
+    })
     .join(' ');
 }

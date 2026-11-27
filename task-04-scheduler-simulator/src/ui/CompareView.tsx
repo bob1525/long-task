@@ -2,6 +2,8 @@ import { useMemo, useState } from 'react';
 import {
   ALGORITHM_CATALOG,
   compareAlgorithms,
+  comparisonToCsv,
+  comparisonToHtml,
   comparisonToJson,
   formatNumber,
   formatPercent,
@@ -17,7 +19,18 @@ interface CompareViewProps {
   processes: ProcessSpec[];
   quantum: number;
   mlfqQuantums: number[];
+  contextSwitch: number;
+  agingInterval: number;
+  mlfqBoost: number;
 }
+
+const DEFAULT_COMPARE: AlgorithmId[] = ALGORITHM_CATALOG.map((item) => item.id).filter((id) => id !== 'hrrn');
+
+const BAR_METRICS = [
+  { key: 'waiting', label: '平均等待', className: '' },
+  { key: 'turnaround', label: '平均周转', className: 'is-turnaround' },
+  { key: 'response', label: '平均响应', className: 'is-response' },
+] as const;
 
 function metric(result: SimulationResult, key: 'waiting' | 'turnaround' | 'response'): number | null {
   return result.averages[key];
@@ -38,8 +51,15 @@ function winners(
   return new Set(scored.filter((item) => item.value.toFixed(6) === target.toFixed(6)).map((item) => item.id));
 }
 
-export function CompareView({ processes, quantum, mlfqQuantums }: CompareViewProps) {
-  const [selected, setSelected] = useState<AlgorithmId[]>(ALGORITHM_CATALOG.map((item) => item.id));
+export function CompareView({
+  processes,
+  quantum,
+  mlfqQuantums,
+  contextSwitch,
+  agingInterval,
+  mlfqBoost,
+}: CompareViewProps) {
+  const [selected, setSelected] = useState<AlgorithmId[]>(DEFAULT_COMPARE);
   const [report, setReport] = useState<SimulationResult[] | null>(null);
   const [error, setError] = useState('');
 
@@ -71,6 +91,9 @@ export function CompareView({ processes, quantum, mlfqQuantums }: CompareViewPro
         algorithm: item.id,
         quantum,
         mlfqQuantums,
+        contextSwitch,
+        agingInterval,
+        mlfqBoost,
       }));
       setReport(compareAlgorithms(processes, runs));
       setError('');
@@ -110,9 +133,31 @@ export function CompareView({ processes, quantum, mlfqQuantums }: CompareViewPro
         >
           导出对比 JSON
         </button>
+        <button
+          type="button"
+          data-testid="btn-export-compare-csv"
+          disabled={!report}
+          onClick={() => {
+            if (!report) return;
+            downloadText('schedule-comparison.csv', comparisonToCsv(report), 'text/csv');
+          }}
+        >
+          导出对比 CSV
+        </button>
+        <button
+          type="button"
+          data-testid="btn-export-compare-html"
+          disabled={!report}
+          onClick={() => {
+            if (!report) return;
+            downloadText('schedule-comparison.html', comparisonToHtml(report), 'text/html');
+          }}
+        >
+          导出可打印 HTML
+        </button>
       </div>
       <p className="note">
-        {`同一组进程分别从 t=0 独立跑完。RR 时间片 ${quantum}，MLFQ 时间片 ${mlfqQuantums.join('/')}。改过时间片后要重新生成。高亮表示该列更优（等待、周转、响应更低，CPU 利用率更高）。`}
+        {`同一组进程分别从 t=0 独立跑完。RR 时间片 ${quantum}，MLFQ 时间片 ${mlfqQuantums.join('/')}，上下文切换 ${contextSwitch}，优先级老化 ${agingInterval === 0 ? '关闭' : agingInterval}，MLFQ 提升 ${mlfqBoost === 0 ? '关闭' : mlfqBoost}。改过这些参数后要重新生成。高亮表示该列更优（等待、周转、响应更低，CPU 利用率更高）。HRRN 默认不勾选。`}
       </p>
       {error ? <p className="error">{error}</p> : null}
       {report ? (
@@ -154,6 +199,32 @@ export function CompareView({ processes, quantum, mlfqQuantums }: CompareViewPro
                 })}
               </tbody>
             </table>
+          </div>
+          <div className="compare-bars" data-testid="compare-bars">
+            {BAR_METRICS.map((metricItem) => {
+              const values = report.map((result) => result.averages[metricItem.key] ?? 0);
+              const max = Math.max(1, ...values);
+              return (
+                <section key={metricItem.key} className="bar-metric">
+                  <h3>{metricItem.label}</h3>
+                  {report.map((result) => {
+                    const id = result.options.algorithm;
+                    const info = ALGORITHM_CATALOG.find((item) => item.id === id);
+                    const value = result.averages[metricItem.key];
+                    const width = value === null || max <= 0 ? '0%' : `${(value / max) * 100}%`;
+                    return (
+                      <div key={`${metricItem.key}-${id}`} className="bar-row" data-testid={`bar-${metricItem.key}-${id}`}>
+                        <span>{info?.short ?? id}</span>
+                        <span className="bar-track">
+                          <i className={metricItem.className ? `bar-fill ${metricItem.className}` : 'bar-fill'} style={{ width }} />
+                        </span>
+                        <b>{formatNumber(value)}</b>
+                      </div>
+                    );
+                  })}
+                </section>
+              );
+            })}
           </div>
           <div className="compare-gantts">
             {report.map((result) => {

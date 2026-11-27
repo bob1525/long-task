@@ -16,7 +16,9 @@ export function GanttChart({
   rootTestId = 'gantt',
   caption,
 }: GanttChartProps) {
-  const patternId = `idle-${useId().replace(/:/g, '')}`;
+  const patternKey = useId().replace(/:/g, '');
+  const idlePatternId = `idle-${patternKey}`;
+  const switchPatternId = `switch-${patternKey}`;
   const segments = toGanttSegments(slices);
   const end = Math.max(1, ...segments.map((segment) => segment.end));
   const left = 48;
@@ -46,9 +48,13 @@ export function GanttChart({
             aria-label={caption ?? '甘特图'}
           >
             <defs>
-              <pattern id={patternId} width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
+              <pattern id={idlePatternId} width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(35)">
                 <rect width="8" height="8" fill="#e7e0d4" />
                 <line x1="0" y1="0" x2="0" y2="8" stroke="#8d8476" strokeWidth="3" />
+              </pattern>
+              <pattern id={switchPatternId} width="8" height="8" patternUnits="userSpaceOnUse" patternTransform="rotate(-35)">
+                <rect width="8" height="8" fill="#f3ddb0" />
+                <line x1="0" y1="0" x2="0" y2="8" stroke="#8a5a12" strokeWidth="3" />
               </pattern>
             </defs>
             {Array.from({ length: end }, (_, time) => (
@@ -65,14 +71,17 @@ export function GanttChart({
             {segments.map((segment) => {
               const x = left + segment.start * unitPx + 4;
               const barWidth = Math.max(8, (segment.end - segment.start) * unitPx - 8);
-              const idle = segment.pid === null;
-              const fill = idle ? `url(#${patternId})` : colorForPid(segment.pid ?? 1);
+              const switching = segment.switch;
+              const idle = segment.pid === null && !switching;
+              const fill = switching ? `url(#${switchPatternId})` : idle ? `url(#${idlePatternId})` : colorForPid(segment.pid ?? 1);
               const showRange = barWidth >= 30;
+              const muted = idle || switching;
               return (
                 <g
                   key={segment.index}
                   data-testid={sliceTestId}
-                  data-pid={segment.pid === null ? 'idle' : String(segment.pid)}
+                  data-pid={switching ? 'switch' : idle ? 'idle' : String(segment.pid)}
+                  data-switch={switching ? 'true' : 'false'}
                   data-start={segment.start}
                   data-end={segment.end}
                 >
@@ -81,7 +90,7 @@ export function GanttChart({
                     x={x + barWidth / 2}
                     y={top + (showRange ? 22 : 31)}
                     textAnchor="middle"
-                    className={idle ? 'gantt-label is-idle' : 'gantt-label'}
+                    className={muted ? 'gantt-label is-idle' : 'gantt-label'}
                   >
                     {segment.label}
                   </text>
@@ -90,7 +99,7 @@ export function GanttChart({
                       x={x + barWidth / 2}
                       y={top + 40}
                       textAnchor="middle"
-                      className={idle ? 'gantt-range is-idle' : barWidth < 68 ? 'gantt-range is-compact' : 'gantt-range'}
+                      className={muted ? 'gantt-range is-idle' : barWidth < 68 ? 'gantt-range is-compact' : 'gantt-range'}
                     >
                       {segment.start}–{segment.end}
                     </text>
@@ -115,7 +124,13 @@ export function GanttChart({
               P{pid}
             </li>
           ))}
-          {segments.some((segment) => segment.pid === null) ? (
+          {segments.some((segment) => segment.switch) ? (
+            <li>
+              <i className="legend-switch" />
+              切换
+            </li>
+          ) : null}
+          {segments.some((segment) => segment.pid === null && !segment.switch) ? (
             <li>
               <i className="legend-idle" />
               空闲

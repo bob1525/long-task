@@ -20,4 +20,8 @@ export { formatHistory, formatNumber, formatPercent, sliceSignature } from './fo
 export { colorForPid, historySpans, PID_COLORS, toGanttSegments } from './gantt';
 export type { GanttSegment, HistorySpan } from './gantt';
 export { SchedulerEngine, compareAlgorithms, isPreemptive, normalizeOptions, runToCompletion } from './engine';
-export { comparisonToJson, resultToCsv, resultToJson } from './export';
+export { comparisonToCsv, comparisonToHtml, comparisonToJson, resultToCsv, resultToJson } from './export';
+export { importProcesses } from './import';
+export type { ImportIssue, ImportResult } from './import';
+export { generateProcesses, mulberry32 } from './random';
+export type { RandomProcessOptions } from './random';

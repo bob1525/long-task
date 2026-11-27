@@ -51,9 +51,15 @@ function average(rows: ResultRow[], key: 'waitingTime' | 'turnaroundTime' | 'res
   return (rows.reduce((sum, row) => sum + row[key], 0) / rows.length).toFixed(2);
 }
 
-function signature(slices: Slice[]): string {
+function signature(slices: { pid: number | null; start: number; end: number; switch?: boolean }[]): string {
   return slices
-    .map((slice) => (slice.pid === null ? `空闲[${slice.start},${slice.end})` : `P${slice.pid}[${slice.start},${slice.end})`))
+    .map((slice) =>
+      slice.switch
+        ? `切换[${slice.start},${slice.end})`
+        : slice.pid === null
+          ? `空闲[${slice.start},${slice.end})`
+          : `P${slice.pid}[${slice.start},${slice.end})`,
+    )
     .join(' ');
 }
 
@@ -256,4 +262,181 @@ test('I/O 示例会进入等待态', async ({ page }) => {
   await expect(page.getByTestId('stat-1-waiting')).toHaveText('0');
   await expect(page.getByTestId('stat-2-waiting')).toHaveText('2');
   await expect(page.getByTestId('waiting-empty')).toHaveText('无');
+});
+
+interface RoundSlice {
+  pid: number | null;
+  start: number;
+  end: number;
+  switch?: boolean;
+}
+
+interface RoundRun {
+  algorithm: string;
+  slices: RoundSlice[];
+}
+
+const round3 = JSON.parse(readFileSync(path.join(process.cwd(), 'tests/fixtures/round3-cases.json'), 'utf8')) as {
+  cases: { id: string; runs: RoundRun[] }[];
+};
+
+function roundRun(caseId: string, algorithm: string): RoundRun {
+  const found = round3.cases.find((item) => item.id === caseId)?.runs.find((run) => run.algorithm === algorithm);
+  if (!found) throw new Error(`缺少用例 ${caseId} 的 ${algorithm}`);
+  return found;
+}
+
+async function readMarkedSlices(page: Page): Promise<{ pid: string | null; start: number; end: number; switch: boolean }[]> {
+  return page.getByTestId('gantt-slice').evaluateAll((nodes) =>
+    nodes.map((node) => ({
+      pid: node.getAttribute('data-pid'),
+      start: Number(node.getAttribute('data-start')),
+      end: Number(node.getAttribute('data-end')),
+      switch: node.getAttribute('data-switch') === 'true',
+    })),
+  );
+}
+
+test('CSV 导入成功，格式错误按行提示且不替换进程表', async ({ page }) => {
+  await page.getByTestId('input-import').setInputFiles({
+    name: 'bad.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from(['pid,arrival,burst,priority', '1,0,4,2', 'x,1,3,1', '2,0,0,1', ''].join('\n')),
+  });
+  const errors = page.getByTestId('import-error');
+  await expect(errors).toHaveCount(2);
+  await expect(errors.nth(0)).toContainText('第 3 行');
+  await expect(errors.nth(0)).toContainText('PID');
+  await expect(errors.nth(1)).toContainText('第 4 行');
+  await expect(errors.nth(1)).toContainText('服务时间');
+  await expect(page.getByTestId('process-row-4')).toBeVisible();
+
+  await page.getByTestId('input-import').setInputFiles({
+    name: 'procs.csv',
+    mimeType: 'text/csv',
+    buffer: Buffer.from('pid,arrival,burst,priority\n1,0,4,2\n2,0,3,1\n'),
+  });
+  await expect(page.getByTestId('import-errors')).toHaveCount(0);
+  await expect(page.getByTestId('process-row-1')).toBeVisible();
+  await expect(page.getByTestId('process-row-2')).toBeVisible();
+  await expect(page.getByTestId('process-row-4')).toHaveCount(0);
+  await page.getByTestId('algo-fcfs').click();
+  await page.getByTestId('btn-run-to-end').click();
+  expect(await readSlices(page)).toEqual([
+    { pid: 1, start: 0, end: 4 },
+    { pid: 2, start: 4, end: 7 },
+  ]);
+  await page.screenshot({ path: 'screenshots/import.png', fullPage: true });
+});
+
+test('同一随机种子生成相同进程表', async ({ page }) => {
+  async function tableValues(): Promise<string> {
+    return page.locator('[data-testid="process-table"] input').evaluateAll((nodes) =>
+      nodes.map((node) => (node as HTMLInputElement).value).join(','),
+    );
+  }
+  await page.getByTestId('input-seed').fill('42');
+  await page.getByTestId('input-random-count').fill('4');
+  await page.getByTestId('btn-random').click();
+  const first = await tableValues();
+  expect(first.split(',')).toHaveLength(24);
+  await page.getByTestId('btn-random').click();
+  expect(await tableValues()).toBe(first);
+  await page.getByTestId('input-seed').fill('99');
+  await page.getByTestId('btn-random').click();
+  expect(await tableValues()).not.toBe(first);
+  await page.screenshot({ path: 'screenshots/random.png', fullPage: true });
+});
+
+test('时间轴可以回到用例 A 的第 3 时刻', async ({ page }) => {
+  await page.getByTestId('preset-A').click();
+  await page.getByTestId('algo-fcfs').click();
+  await page.getByTestId('btn-run-to-end').click();
+  await expect(page.getByTestId('sim-time')).toHaveText('16');
+  const scrubber = page.getByTestId('timeline-scrubber');
+  await scrubber.focus();
+  for (let step = 0; step < 13; step += 1) await page.keyboard.press('ArrowLeft');
+  await expect(page.getByTestId('sim-time')).toHaveText('3');
+  await expect(page.getByTestId('scrubber-time')).toContainText('回看 3');
+  await expect(page.getByTestId('running-process')).toHaveText('P1');
+  await expect(page.getByTestId('ready-pid')).toHaveAttribute('data-pid', '2');
+  await expect(page.getByTestId('stat-2-waiting')).toHaveText('1');
+  await expect(page.getByTestId('metric-waiting')).toHaveText('—');
+  await page.getByTestId('stage').screenshot({ path: 'screenshots/scrubber.png' });
+});
+
+test('对比柱状图以及 CSV 和可打印 HTML', async ({ page }) => {
+  await page.getByTestId('preset-A').click();
+  await page.getByTestId('tab-compare').click();
+  await expect(page.getByTestId('compare-toggle-hrrn')).not.toBeChecked();
+  await page.getByTestId('btn-compare').click();
+  await expect(page.getByTestId('compare-bars')).toBeVisible();
+  await expect(page.getByTestId('bar-waiting-fcfs')).toContainText('4.75');
+  await expect(page.getByTestId('bar-turnaround-sjf')).toContainText('8.00');
+  await expect(page.getByTestId('bar-response-srtf')).toContainText('0.50');
+  await expect(page.getByTestId('compare-row-hrrn')).toHaveCount(0);
+  await page.getByTestId('compare-bars').screenshot({ path: 'screenshots/compare-bars.png' });
+
+  const [csvDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('btn-export-compare-csv').click(),
+  ]);
+  const csvPath = await csvDownload.path();
+  if (!csvPath) throw new Error('没有下载到对比 CSV');
+  const csv = readFileSync(csvPath, 'utf8');
+  expect(csv.split('\n')[0]).toBe('algorithm,avg_waiting,avg_turnaround,avg_response,cpu_utilization,makespan');
+  expect(csv).toContain('fcfs,');
+  expect(csv).not.toContain('hrrn,');
+
+  const [htmlDownload] = await Promise.all([
+    page.waitForEvent('download'),
+    page.getByTestId('btn-export-compare-html').click(),
+  ]);
+  const htmlPath = await htmlDownload.path();
+  if (!htmlPath) throw new Error('没有下载到对比 HTML');
+  const html = readFileSync(htmlPath, 'utf8');
+  expect(html).toContain('@media print');
+  expect(html).toContain('fcfs');
+  expect(html).toContain('平均等待');
+});
+
+test('用例 D 的 HRRN 甘特图与手算一致', async ({ page }) => {
+  const run = roundRun('D', 'hrrn');
+  await page.getByTestId('preset-D').click();
+  await expect(page.getByTestId('algo-hrrn')).toBeChecked();
+  await expect(page.getByTestId('input-context-switch')).toHaveValue('0');
+  await page.getByTestId('btn-run-to-end').click();
+  expect(await readSlices(page)).toEqual(run.slices);
+  await expect(page.getByTestId('gantt-signature')).toHaveText(signature(run.slices));
+  await page.getByTestId('gantt').screenshot({ path: 'screenshots/gantt-hrrn.png' });
+  await page.screenshot({ path: 'screenshots/full-hrrn.png', fullPage: true });
+});
+
+test('切换开销为 1 时 FCFS 和 RR 都画出切换段，用例 A 会把它清回 0', async ({ page }) => {
+  const fcfs = roundRun('E', 'fcfs');
+  const rr = roundRun('E', 'rr');
+  await page.getByTestId('preset-E').click();
+  await expect(page.getByTestId('input-context-switch')).toHaveValue('1');
+  await page.getByTestId('btn-run-to-end').click();
+  await expect(page.getByTestId('gantt-signature')).toHaveText(signature(fcfs.slices));
+  const marked = await readMarkedSlices(page);
+  expect(marked[0]).toMatchObject({ pid: 'switch', start: 0, end: 1, switch: true });
+  expect(marked.filter((slice) => slice.switch)).toHaveLength(3);
+  await expect(page.getByTestId('metric-cpu')).toHaveText('75.00%');
+  await page.getByTestId('gantt').screenshot({ path: 'screenshots/gantt-context-switch.png' });
+
+  await page.getByTestId('algo-rr').click();
+  await expect(page.getByTestId('input-quantum')).toHaveValue('2');
+  await page.getByTestId('btn-run-to-end').click();
+  await expect(page.getByTestId('sim-time')).toHaveText('14');
+  await expect(page.getByTestId('gantt-signature')).toHaveText(signature(rr.slices));
+  await page.getByTestId('gantt').screenshot({ path: 'screenshots/gantt-rr-switch.png' });
+
+  await page.getByTestId('preset-A').click();
+  await expect(page.getByTestId('input-context-switch')).toHaveValue('0');
+  await page.getByTestId('algo-fcfs').click();
+  await page.getByTestId('btn-run-to-end').click();
+  const caseAFcfs = caseA.runs.find((run) => run.algorithm === 'fcfs');
+  expect(await readSlices(page)).toEqual(caseAFcfs?.slices);
+  await expect(page.getByTestId('gantt-signature')).not.toContainText('切换');
 });

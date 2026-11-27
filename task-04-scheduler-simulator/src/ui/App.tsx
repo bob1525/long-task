@@ -10,11 +10,14 @@ import {
   formatNumber,
   formatPercent,
   historySpans,
+  generateProcesses,
+  importProcesses,
   resultToCsv,
   resultToJson,
   runToCompletion,
   type AlgorithmId,
   type EngineSnapshot,
+  type ImportIssue,
   type ProcessSpec,
   type SchedulerOptions,
 } from '../core';
@@ -88,16 +91,41 @@ export function App() {
   const [addPriority, setAddPriority] = useState('1');
   const [addIoAfter, setAddIoAfter] = useState('');
   const [addIoDuration, setAddIoDuration] = useState('');
+  const [contextSwitch, setContextSwitch] = useState(0);
+  const [agingInterval, setAgingInterval] = useState(0);
+  const [mlfqBoost, setMlqBoost] = useState(0);
+  const [seed, setSeed] = useState(42);
+  const [randomCount, setRandomCount] = useState(4);
+  const [importErrors, setImportErrors] = useState<ImportIssue[]>([]);
+  const [importKind, setImportKind] = useState<'json' | 'csv'>('csv');
+  const [frames, setFrames] = useState<EngineSnapshot[]>([]);
+  const [cursor, setCursor] = useState(0);
 
   const engineRef = useRef<SchedulerEngine | null>(null);
   const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
   const playingRef = useRef(false);
   const mountedRef = useRef(true);
   const draftRef = useRef<ProcessSpec[]>([]);
-  const optionsRef = useRef<SchedulerOptions>({ algorithm: 'fcfs', quantum: 2, mlfqQuantums: [2, 4, 8] });
+  const framesRef = useRef<EngineSnapshot[]>([]);
+  const followLiveRef = useRef(true);
+  const optionsRef = useRef<SchedulerOptions>({
+    algorithm: 'fcfs',
+    quantum: 2,
+    mlfqQuantums: [2, 4, 8],
+    contextSwitch: 0,
+    agingInterval: 0,
+    mlfqBoost: 0,
+  });
 
   draftRef.current = rows.map(specFromRow);
-  optionsRef.current = { algorithm, quantum, mlfqQuantums: [...mlfqQuantums] };
+  optionsRef.current = {
+    algorithm,
+    quantum,
+    mlfqQuantums: [...mlfqQuantums],
+    contextSwitch,
+    agingInterval,
+    mlfqBoost,
+  };
 
   useEffect(() => {
     mountedRef.current = true;
@@ -119,18 +147,29 @@ export function App() {
 
   function publish(engine: SchedulerEngine) {
     if (!mountedRef.current) return;
-    setSnap(engine.getSnapshot());
+    const next = engine.getSnapshot();
+    const kept = framesRef.current.filter((frame) => frame.currentTime < next.currentTime);
+    const merged = [...kept, next];
+    framesRef.current = merged;
+    setFrames(merged);
+    setSnap(next);
+    if (followLiveRef.current) setCursor(merged.length - 1);
   }
 
   function ensureEngine(): SchedulerEngine {
     if (!engineRef.current) {
-      engineRef.current = new SchedulerEngine(
+      const engine = new SchedulerEngine(
         draftRef.current.map((spec) => ({
           ...spec,
           ioBursts: spec.ioBursts?.map((burst) => ({ ...burst })),
         })),
         optionsRef.current,
       );
+      engineRef.current = engine;
+      const initial = engine.getSnapshot();
+      framesRef.current = [initial];
+      setFrames([initial]);
+      setCursor(0);
     }
     return engineRef.current;
   }
@@ -138,6 +177,10 @@ export function App() {
   function resetClock() {
     pause();
     engineRef.current = null;
+    framesRef.current = [];
+    followLiveRef.current = true;
+    setFrames([]);
+    setCursor(0);
     setSnap(null);
     setError('');
   }
@@ -149,6 +192,14 @@ export function App() {
 
   function onStep() {
     pause();
+    if (engineRef.current && cursor < framesRef.current.length - 1) {
+      const nextCursor = cursor + 1;
+      followLiveRef.current = nextCursor >= framesRef.current.length - 1;
+      setCursor(nextCursor);
+      setError('');
+      return;
+    }
+    followLiveRef.current = true;
     if (draftRef.current.length === 0 && !engineRef.current) {
       setError('请先添加进程');
       return;
@@ -164,6 +215,7 @@ export function App() {
 
   function play(nextSpeed: Speed) {
     pause();
+    followLiveRef.current = true;
     setSpeed(nextSpeed);
     if (draftRef.current.length === 0 && !engineRef.current) {
       setError('请先添加进程');
@@ -197,6 +249,7 @@ export function App() {
 
   function runToEnd() {
     pause();
+    followLiveRef.current = true;
     if (draftRef.current.length === 0 && !engineRef.current) {
       setError('请先添加进程');
       return;
@@ -206,10 +259,10 @@ export function App() {
       let guard = 0;
       while (!engine.isFinished()) {
         engine.step();
+        publish(engine);
         guard += 1;
         if (guard > 100_000) throw new Error('仿真步数过多');
       }
-      publish(engine);
       setError('');
     } catch (caught) {
       engineRef.current = null;
@@ -226,6 +279,12 @@ export function App() {
     if (!Number.isInteger(value) || value < 1) return;
     resetClock();
     setQuantum(value);
+  }
+
+  function changeNonNegative(value: number, apply: (next: number) => void) {
+    if (!Number.isInteger(value) || value < 0) return;
+    resetClock();
+    apply(value);
   }
 
   function changeMlfq(index: number, value: number) {
@@ -250,6 +309,10 @@ export function App() {
     if (preset.algorithm) setAlgorithm(preset.algorithm);
     if (preset.quantum) setQuantum(preset.quantum);
     if (preset.mlfqQuantums) setMlqQuantums([...preset.mlfqQuantums]);
+    setContextSwitch(preset.contextSwitch ?? 0);
+    setAgingInterval(preset.agingInterval ?? 0);
+    setMlqBoost(preset.mlfqBoost ?? 0);
+    setImportErrors([]);
     const maxPid = preset.processes.reduce((max, proc) => Math.max(max, proc.pid), 0);
     setAddPid(String(maxPid + 1));
     setAddArrival('');
@@ -301,6 +364,59 @@ export function App() {
     }
   }
 
+  function onScrub(time: number) {
+    pause();
+    const index = framesRef.current.findIndex((frame) => frame.currentTime === time);
+    if (index < 0) return;
+    followLiveRef.current = index === framesRef.current.length - 1;
+    setCursor(index);
+  }
+
+  function applyImported(processes: ProcessSpec[]) {
+    resetClock();
+    setRows(processes.map(rowFromSpec));
+    setImportErrors([]);
+    const maxPid = processes.reduce((max, proc) => Math.max(max, proc.pid), 0);
+    setAddPid(String(maxPid + 1));
+    setAddArrival('');
+  }
+
+  function onImportFile(file: File | undefined) {
+    if (!file) return;
+    const reader = new FileReader();
+    reader.onload = () => {
+      const text = String(reader.result ?? '');
+      const trimmed = text.trim();
+      const kind: 'json' | 'csv' =
+        file.name.toLowerCase().endsWith('.json') || trimmed.startsWith('{') || trimmed.startsWith('[') ? 'json' : 'csv';
+      setImportKind(kind);
+      const imported = importProcesses(text, kind);
+      if (imported.errors.length > 0 || imported.processes.length === 0) {
+        setImportErrors(imported.errors.length > 0 ? imported.errors : [{ line: 1, message: '没有读到进程' }]);
+        return;
+      }
+      applyImported(imported.processes);
+      setError('');
+    };
+    reader.onerror = () => setError('无法读取文件');
+    reader.readAsText(file);
+  }
+
+  function onRandom() {
+    try {
+      const processes = generateProcesses({ seed, count: randomCount });
+      resetClock();
+      setRows(processes.map(rowFromSpec));
+      setImportErrors([]);
+      const maxPid = processes.reduce((max, proc) => Math.max(max, proc.pid), 0);
+      setAddPid(String(maxPid + 1));
+      setAddArrival('');
+      setError('');
+    } catch (caught) {
+      setError(messageOf(caught));
+    }
+  }
+
   function exportResult(kind: 'json' | 'csv') {
     if (draftRef.current.length === 0) {
       setError('请先添加进程');
@@ -319,31 +435,43 @@ export function App() {
     }
   }
 
-  const caption =
+  const viewingPast = snap !== null && frames[cursor] !== undefined && cursor < frames.length - 1;
+  const view = viewingPast ? frames[cursor] : snap;
+  const liveTime = snap?.currentTime ?? 0;
+  const optionNote = [
+    contextSwitch > 0 ? `切换 ${contextSwitch}` : '',
+    (algorithm === 'priority-np' || algorithm === 'priority-p') && agingInterval > 0 ? `老化 ${agingInterval}` : '',
+    algorithm === 'mlfq' && mlfqBoost > 0 ? `提升 ${mlfqBoost}` : '',
+  ].filter((part) => part !== '');
+  const caption = [
     algorithm === 'rr'
       ? `${info?.label ?? 'RR'} · q=${quantum}`
       : algorithm === 'mlfq'
         ? `${info?.label ?? 'MLFQ'} · q=${mlfqQuantums.join('/')}`
-        : (info?.label ?? algorithm);
-  const holding = snap?.holdingPid ?? null;
-  const holdingProc = holding === null ? null : (snap?.processes.find((proc) => proc.pid === holding) ?? null);
-  const runningLabel = !snap ? '尚未开始' : holding !== null ? `P${holding}` : '空闲';
-  const nextReady = snap?.readyQueue[0] ?? null;
+        : (info?.label ?? algorithm),
+    ...optionNote,
+  ].join(' · ');
+  const holding = view?.holdingPid ?? null;
+  const holdingProc = holding === null ? null : (view?.processes.find((proc) => proc.pid === holding) ?? null);
+  const runningLabel = !view ? '尚未开始' : holding !== null ? `P${holding}` : '空闲';
+  const nextReady = view?.readyQueue[0] ?? null;
   const arrivingNow =
-    snap?.processes.filter((proc) => proc.state === 'new' && proc.arrivalTime === snap.currentTime) ?? [];
-  const cpuDetail = !snap
+    view?.processes.filter((proc) => proc.state === 'new' && proc.arrivalTime === view.currentTime) ?? [];
+  const cpuDetail = !view
     ? '尚未执行'
-    : holdingProc
-      ? `剩余 ${holdingProc.remainingTime} · 优先级 ${holdingProc.priority}`
-      : nextReady
-        ? `本拍已结束，CPU 已空出。下一步分派时队首是 P${nextReady.pid}。`
-        : arrivingNow.length > 0
-          ? `时刻 ${snap.currentTime} 到达 ${arrivingNow.map((proc) => `P${proc.pid}`).join('、')}，下一步才会入队并分派。`
-          : snap.waitingQueue.length > 0
-            ? 'CPU 空闲，就绪队列没有进程，有进程正在等待 I/O。'
-            : snap.finished
-              ? '没有待运行的进程。'
-              : 'CPU 空闲。';
+    : view.contextSwitching && holdingProc
+      ? `正在切换到 P${holdingProc.pid}，这一拍不消耗服务时间 · 剩余 ${holdingProc.remainingTime}`
+      : holdingProc
+        ? `剩余 ${holdingProc.remainingTime} · 优先级 ${holdingProc.effectivePriority ?? holdingProc.priority}`
+        : nextReady
+          ? `本拍已结束，CPU 已空出。下一步分派时队首是 P${nextReady.pid}。`
+          : arrivingNow.length > 0
+            ? `时刻 ${view.currentTime} 到达 ${arrivingNow.map((proc) => `P${proc.pid}`).join('、')}，下一步才会入队并分派。`
+            : view.waitingQueue.length > 0
+              ? 'CPU 空闲，就绪队列没有进程，有进程正在等待 I/O。'
+              : view.finished
+                ? '没有待运行的进程。'
+                : 'CPU 空闲。';
   const specs = rows.map(specFromRow);
 
   return (
@@ -376,7 +504,14 @@ export function App() {
       </div>
 
       {tab === 'compare' ? (
-        <CompareView processes={specs} quantum={quantum} mlfqQuantums={mlfqQuantums} />
+        <CompareView
+          processes={specs}
+          quantum={quantum}
+          mlfqQuantums={mlfqQuantums}
+          contextSwitch={contextSwitch}
+          agingInterval={agingInterval}
+          mlfqBoost={mlfqBoost}
+        />
       ) : (
         <>
           <section className="panel algo-panel">
@@ -433,6 +568,44 @@ export function App() {
                 </button>
               </div>
             ) : null}
+            {(algorithm === 'priority-np' || algorithm === 'priority-p') ? (
+              <label className="inline-field">
+                老化间隔
+                <input
+                  data-testid="input-aging"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={agingInterval}
+                  onChange={(event) => changeNonNegative(event.target.valueAsNumber, setAgingInterval)}
+                />
+              </label>
+            ) : null}
+            {algorithm === 'mlfq' ? (
+              <label className="inline-field">
+                提升周期
+                <input
+                  data-testid="input-mlfq-boost"
+                  type="number"
+                  min={0}
+                  step={1}
+                  value={mlfqBoost}
+                  onChange={(event) => changeNonNegative(event.target.valueAsNumber, setMlqBoost)}
+                />
+              </label>
+            ) : null}
+            <label className="inline-field">
+              切换开销
+              <input
+                data-testid="input-context-switch"
+                type="number"
+                min={0}
+                step={1}
+                value={contextSwitch}
+                onChange={(event) => changeNonNegative(event.target.valueAsNumber, setContextSwitch)}
+              />
+            </label>
+            <p className="subtle">老化、提升和切换开销填 0 表示关闭。关闭时用例 A/B/C 的结果与原来相同。</p>
           </section>
 
           <section className="preset-row">
@@ -441,6 +614,57 @@ export function App() {
                 {preset.label}
               </button>
             ))}
+            <div className="import-row">
+              <label className="inline-field">
+                导入 JSON / CSV
+                <input
+                  data-testid="input-import"
+                  type="file"
+                  accept=".json,.csv,application/json,text/csv"
+                  onChange={(event) => {
+                    const file = event.target.files?.[0];
+                    onImportFile(file);
+                    event.target.value = '';
+                  }}
+                />
+              </label>
+            </div>
+            <div className="random-row">
+              <label className="inline-field">
+                随机种子
+                <input
+                  data-testid="input-seed"
+                  type="number"
+                  step={1}
+                  value={seed}
+                  onChange={(event) => setSeed(event.target.valueAsNumber)}
+                />
+              </label>
+              <label className="inline-field">
+                数量
+                <input
+                  data-testid="input-random-count"
+                  type="number"
+                  min={1}
+                  max={20}
+                  step={1}
+                  value={randomCount}
+                  onChange={(event) => setRandomCount(event.target.valueAsNumber)}
+                />
+              </label>
+              <button type="button" data-testid="btn-random" onClick={onRandom}>
+                按种子生成
+              </button>
+            </div>
+            {importErrors.length > 0 ? (
+              <ul className="import-errors" data-testid="import-errors">
+                {importErrors.map((item, index) => (
+                  <li key={`${item.line}-${index}`} data-testid="import-error">
+                    {importKind === 'json' ? `第 ${item.line} 条` : `第 ${item.line} 行`}：{item.message}
+                  </li>
+                ))}
+              </ul>
+            ) : null}
           </section>
 
           <section className="controls">
@@ -473,8 +697,23 @@ export function App() {
               重置
             </button>
             <p className="clock">
-              仿真时间 <strong data-testid="sim-time">{snap?.currentTime ?? 0}</strong>
+              仿真时间 <strong data-testid="sim-time">{view?.currentTime ?? 0}</strong>
             </p>
+            {frames.length > 1 && snap ? (
+              <label className="scrubber">
+                时间轴
+                <input
+                  data-testid="timeline-scrubber"
+                  type="range"
+                  min={frames[0]?.currentTime ?? 0}
+                  max={frames[frames.length - 1]?.currentTime ?? 0}
+                  step={1}
+                  value={view?.currentTime ?? 0}
+                  onChange={(event) => onScrub(event.target.valueAsNumber)}
+                />
+                <span data-testid="scrubber-time">{viewingPast ? `回看 ${view?.currentTime ?? 0}` : '实时'}</span>
+              </label>
+            ) : null}
             <button type="button" data-testid="btn-export-json" onClick={() => exportResult('json')}>
               导出 JSON
             </button>
@@ -488,10 +727,17 @@ export function App() {
               {error}
             </p>
           ) : null}
-          {snap?.finished ? <p className="done-banner">全部进程已完成。可以导出、切换算法，或在下方继续添加进程。</p> : null}
+          {snap?.finished && !viewingPast ? (
+            <p className="done-banner">全部进程已完成。可以导出、切换算法，或在下方继续添加进程。</p>
+          ) : null}
+          {viewingPast ? (
+            <p className="done-banner" data-testid="scrubber-note">
+              正在回看时刻 {view?.currentTime ?? 0}。添加进程仍按当前仿真时间 {liveTime}。单步查看下一记录，播放从已经走到的时刻继续。
+            </p>
+          ) : null}
 
           <div data-testid="stage">
-          <GanttChart slices={snap?.slices ?? []} caption={caption} />
+          <GanttChart slices={view?.slices ?? []} caption={caption} />
 
           <section className="status-grid">
             <article className="card run-card" style={holding !== null ? { borderColor: colorForPid(holding) } : undefined}>
@@ -500,18 +746,18 @@ export function App() {
                 {runningLabel}
               </p>
               <p data-testid="cpu-holding">{cpuDetail}</p>
-              {snap?.lastInterval ? (
+              {view?.lastInterval ? (
                 <p className="subtle">
-                  上一段 [{snap.lastInterval.start}, {snap.lastInterval.end}){' '}
-                  {snap.lastExecutedPid ? `P${snap.lastExecutedPid}` : '空闲'}
+                  上一段 [{view.lastInterval.start}, {view.lastInterval.end}){' '}
+                  {view.contextSwitching ? '切换' : view.lastExecutedPid ? `P${view.lastExecutedPid}` : '空闲'}
                 </p>
               ) : null}
             </article>
             <article className="card">
               <p className="kicker">就绪队列</p>
-              {algorithm === 'mlfq' && snap?.mlfqQueues ? (
+              {algorithm === 'mlfq' && view?.mlfqQueues ? (
                 <div data-testid="ready-queue" className="mlfq-board">
-                  {snap.mlfqQueues.map((queue) => (
+                  {view.mlfqQueues.map((queue) => (
                     <div key={queue.level} className="mlfq-line" data-testid={`mlfq-level-${queue.level}`}>
                       <span className="q-label">
                         Q{queue.level}
@@ -531,10 +777,10 @@ export function App() {
                 </div>
               ) : (
                 <div data-testid="ready-queue" className="chip-row">
-                  {(snap?.readyQueue.length ?? 0) === 0 ? (
+                  {(view?.readyQueue.length ?? 0) === 0 ? (
                     <p data-testid="ready-empty">队列为空</p>
                   ) : (
-                    snap?.readyQueue.map((entry, index) => (
+                    view?.readyQueue.map((entry, index) => (
                       <span key={`${entry.pid}-${index}`} className="chip" data-testid="ready-pid" data-pid={entry.pid}>
                         {index === 0 ? <i>队首</i> : null}
                         P{entry.pid}
@@ -545,10 +791,10 @@ export function App() {
               )}
               <div className="wait-row" data-testid="waiting-queue">
                 <span className="kicker">等待（I/O）</span>
-                {(snap?.waitingQueue.length ?? 0) === 0 ? (
+                {(view?.waitingQueue.length ?? 0) === 0 ? (
                   <em data-testid="waiting-empty">无</em>
                 ) : (
-                  snap?.waitingQueue.map((pid) => (
+                  view?.waitingQueue.map((pid) => (
                     <span key={pid} className="chip is-waiting" data-testid="waiting-pid" data-pid={pid}>
                       P{pid}
                     </span>
@@ -562,19 +808,19 @@ export function App() {
               <dl className="metrics">
                 <div>
                   <dt>平均等待</dt>
-                  <dd data-testid="metric-waiting">{formatNumber(snap?.averages.waiting)}</dd>
+                  <dd data-testid="metric-waiting">{formatNumber(view?.averages.waiting)}</dd>
                 </div>
                 <div>
                   <dt>平均周转</dt>
-                  <dd data-testid="metric-turnaround">{formatNumber(snap?.averages.turnaround)}</dd>
+                  <dd data-testid="metric-turnaround">{formatNumber(view?.averages.turnaround)}</dd>
                 </div>
                 <div>
                   <dt>平均响应</dt>
-                  <dd data-testid="metric-response">{formatNumber(snap?.averages.response)}</dd>
+                  <dd data-testid="metric-response">{formatNumber(view?.averages.response)}</dd>
                 </div>
                 <div>
                   <dt>CPU 利用率</dt>
-                  <dd data-testid="metric-cpu">{formatPercent(snap?.cpuUtilization)}</dd>
+                  <dd data-testid="metric-cpu">{formatPercent(view?.cpuUtilization)}</dd>
                 </div>
               </dl>
               <ul className="formula">
@@ -610,7 +856,7 @@ export function App() {
                   </thead>
                   <tbody>
                     {rows.map((row) => {
-                      const live = snap?.processes.find((proc) => proc.pid === Number(row.pid));
+                      const live = view?.processes.find((proc) => proc.pid === Number(row.pid));
                       const pid = Number(row.pid);
                       return (
                         <tr key={row.uid} data-testid={`process-row-${row.pid}`}>
@@ -701,7 +947,7 @@ export function App() {
                   到达
                   <input
                     data-testid="add-arrival"
-                    placeholder={String(snap?.currentTime ?? 0)}
+                    placeholder={String(liveTime)}
                     value={addArrival}
                     onChange={(event) => setAddArrival(event.target.value)}
                   />
@@ -746,8 +992,8 @@ export function App() {
                 ))}
               </div>
               <div data-testid="state-history">
-                {snap ? (
-                  snap.processes.map((proc) => (
+                {view ? (
+                  view.processes.map((proc) => (
                     <article key={proc.pid} className="history-row" data-testid={`history-${proc.pid}`}>
                       <header>
                         <strong>P{proc.pid}</strong>
@@ -755,9 +1001,9 @@ export function App() {
                       </header>
                       <div
                         className="lane"
-                        style={{ gridTemplateColumns: `repeat(${Math.max(snap.currentTime, 1)}, minmax(8px, 1fr))` }}
+                        style={{ gridTemplateColumns: `repeat(${Math.max(view.currentTime, 1)}, minmax(8px, 1fr))` }}
                       >
-                        {historySpans(proc.history, snap.currentTime).map((span, index) => (
+                        {historySpans(proc.history, view.currentTime).map((span, index) => (
                           <i
                             key={`${span.state}-${span.start}-${index}`}
                             data-state={span.state}
@@ -774,7 +1020,7 @@ export function App() {
               </div>
               <h2>事件</h2>
               <ol className="event-log" data-testid="event-log">
-                {(snap?.logs ?? []).slice(-8).map((line, index) => (
+                {(view?.logs ?? []).slice(-8).map((line, index) => (
                   <li key={`${index}-${line}`}>{line}</li>
                 ))}
               </ol>

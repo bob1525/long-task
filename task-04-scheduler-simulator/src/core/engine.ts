@@ -30,9 +30,17 @@ import { ALGORITHM_IDS } from './types';
  *    visible to arrivals at t+1, and the yielded process is queued before them.
  *
  * Tie-break when selecting among ready processes: earlier arrival, then smaller PID.
- * Priority: smaller number is higher.
+ * Priority: smaller number is higher. Aging, when enabled, subtracts
+ * floor(readyWait / interval) before comparison.
+ * HRRN is non-preemptive and chooses the greatest
+ * (readyWait + burst) / burst, compared by cross-multiplication.
+ * A context switch of length c, when c > 0, occupies the CPU before every
+ * new dispatch. Those slices use pid null plus switch: true and do not
+ * consume burst. c = 0 adds no slices.
+ * MLFQ boost, when the period is positive, runs at t > 0 and t % period === 0
+ * before arrivals: every arrived process returns to Q0 and its quantum is reset.
  * A Gantt slice is one dispatch interval. Immediate re-dispatch is not merged.
- * Consecutive idle time is merged.
+ * Consecutive idle time is merged. Consecutive switch ticks of one switch merge.
  */
 
 interface IoRecord {
@@ -53,6 +61,7 @@ interface Proc {
   ioRemaining: number;
   ioTime: number;
   readyWait: number;
+  switchTime: number;
   firstStart: number | null;
   completionTime: number | null;
   quantumUsed: number;
@@ -80,7 +89,19 @@ export function normalizeOptions(options: SchedulerOptions): NormalizedOptions {
       throw new Error('每一级时间片都必须是大于等于 1 的整数');
     }
   }
-  return { algorithm: options.algorithm, quantum, mlfqQuantums };
+  const contextSwitch = options.contextSwitch ?? 0;
+  const agingInterval = options.agingInterval ?? 0;
+  const mlfqBoost = options.mlfqBoost ?? 0;
+  if (!Number.isInteger(contextSwitch) || contextSwitch < 0) {
+    throw new Error('上下文切换耗时必须是大于等于 0 的整数');
+  }
+  if (!Number.isInteger(agingInterval) || agingInterval < 0) {
+    throw new Error('老化间隔必须是大于等于 0 的整数');
+  }
+  if (!Number.isInteger(mlfqBoost) || mlfqBoost < 0) {
+    throw new Error('MLFQ 提升周期必须是大于等于 0 的整数');
+  }
+  return { algorithm: options.algorithm, quantum, mlfqQuantums, contextSwitch, agingInterval, mlfqBoost };
 }
 
 function assertSpec(spec: ProcessSpec): void {
@@ -123,11 +144,6 @@ function cmpRemaining(a: Proc, b: Proc): number {
   return cmpArrivalPid(a, b);
 }
 
-function cmpPriority(a: Proc, b: Proc): number {
-  if (a.priority !== b.priority) return a.priority - b.priority;
-  return cmpArrivalPid(a, b);
-}
-
 export class SchedulerEngine {
   readonly options: NormalizedOptions;
   private readonly procs: Proc[] = [];
@@ -144,6 +160,8 @@ export class SchedulerEngine {
   private justDispatched = false;
   private lastExecutedPid: number | null = null;
   private lastInterval: { start: number; end: number } | null = null;
+  private switchLeft = 0;
+  private contextSwitching = false;
 
   constructor(specs: readonly ProcessSpec[], options: SchedulerOptions) {
     this.options = normalizeOptions(options);
@@ -195,6 +213,7 @@ export class SchedulerEngine {
       ioRemaining: 0,
       ioTime: 0,
       readyWait: 0,
+      switchTime: 0,
       firstStart: null,
       completionTime: null,
       quantumUsed: 0,
@@ -232,6 +251,7 @@ export class SchedulerEngine {
       currentTime: this.currentTime,
       finished: this.isFinished(),
       holdingPid: this.running?.pid ?? null,
+      contextSwitching: this.contextSwitching,
       lastExecutedPid: this.lastExecutedPid,
       lastInterval: this.lastInterval ? { ...this.lastInterval } : null,
       readyQueue: this.readyEntries(),
@@ -250,6 +270,9 @@ export class SchedulerEngine {
         algorithm: this.options.algorithm,
         quantum: this.options.quantum,
         mlfqQuantums: [...this.options.mlfqQuantums],
+        contextSwitch: this.options.contextSwitch,
+        agingInterval: this.options.agingInterval,
+        mlfqBoost: this.options.mlfqBoost,
       },
     };
   }
@@ -269,7 +292,9 @@ export class SchedulerEngine {
   }
 
   private schedule(t: number): void {
+    this.boost(t);
     this.arrive(t);
+    if (this.switchLeft > 0) return;
     let preempted: Proc | null = null;
     if (this.running && this.shouldPreempt(this.running)) {
       preempted = this.running;
@@ -313,8 +338,8 @@ export class SchedulerEngine {
       return best !== null && best.remainingTime < running.remainingTime;
     }
     if (algorithm === 'priority-p') {
-      const best = this.bestOf(this.ready, cmpPriority);
-      return best !== null && best.priority < running.priority;
+      const best = this.bestOf(this.ready, (a, b) => this.cmpPriorityLive(a, b));
+      return best !== null && this.effectivePriority(best) < this.effectivePriority(running);
     }
     if (algorithm === 'mlfq') {
       for (let level = 0; level < running.level; level += 1) {
@@ -335,11 +360,22 @@ export class SchedulerEngine {
     if (algorithm === 'fcfs' || algorithm === 'rr') {
       return this.ready.shift() ?? null;
     }
-    const cmp = algorithm === 'sjf' || algorithm === 'srtf' ? cmpRemaining : cmpPriority;
+    if (algorithm === 'hrrn') return this.takeBest(this.ready, (a, b) => this.cmpHrrn(a, b));
+    const cmp = algorithm === 'sjf' || algorithm === 'srtf' ? cmpRemaining : (a: Proc, b: Proc) => this.cmpPriorityLive(a, b);
     return this.takeBest(this.ready, cmp);
   }
 
   private dispatch(proc: Proc, t: number): void {
+    if (this.options.contextSwitch > 0) {
+      proc.state = 'running';
+      this.pushHistory(proc, t, 'running');
+      this.running = proc;
+      this.switchLeft = this.options.contextSwitch;
+      this.justDispatched = false;
+      this.continueDispatch = false;
+      this.logs.push(`t=${t} 开始切换到 P${proc.pid}，开销 ${this.options.contextSwitch}`);
+      return;
+    }
     proc.state = 'running';
     if (proc.firstStart === null) proc.firstStart = t;
     this.pushHistory(proc, t, 'running');
@@ -350,6 +386,27 @@ export class SchedulerEngine {
   }
 
   private execute(t: number): void {
+    if (this.switchLeft > 0 && this.running) {
+      const proc = this.running;
+      this.appendSwitch(t);
+      this.contextSwitching = true;
+      this.justDispatched = false;
+      this.continueDispatch = false;
+      this.lastExecutedPid = null;
+      this.lastInterval = { start: t, end: t + 1 };
+      this.accountNonRunning();
+      proc.switchTime += 1;
+      this.switchLeft -= 1;
+      if (this.switchLeft === 0) this.justDispatched = true;
+      this.logs.push(
+        this.switchLeft === 0
+          ? `t=${t + 1} 切换完成，下一拍运行 P${proc.pid}`
+          : `t=${t} 上下文切换，剩余 ${this.switchLeft}`,
+      );
+      this.releaseFinishedIo(t + 1);
+      return;
+    }
+    this.contextSwitching = false;
     if (!this.running) {
       this.appendSlice(null, t);
       this.justDispatched = false;
@@ -363,6 +420,7 @@ export class SchedulerEngine {
     }
 
     const proc = this.running;
+    if (proc.firstStart === null) proc.firstStart = t;
     this.appendSlice(proc.pid, t);
     this.justDispatched = false;
     this.continueDispatch = true;
@@ -474,6 +532,53 @@ export class SchedulerEngine {
     else this.ready.push(proc);
   }
 
+  private boost(t: number): void {
+    const period = this.options.mlfqBoost;
+    if (this.options.algorithm !== 'mlfq' || period < 1 || t === 0 || t % period !== 0) return;
+    for (const proc of this.procs) {
+      if (proc.state === 'new' || proc.state === 'terminated') continue;
+      proc.level = 0;
+      proc.quantumUsed = 0;
+    }
+    const merged: Proc[] = [];
+    for (const queue of this.levels) {
+      merged.push(...queue);
+      queue.length = 0;
+    }
+    const top = this.levels[0];
+    if (!top) throw new Error('MLFQ 缺少 Q0');
+    top.push(...merged);
+    this.logs.push(`t=${t} 周期性提升，已到达进程回到 Q0`);
+  }
+
+  private effectivePriority(proc: Proc): number {
+    const interval = this.options.agingInterval;
+    if (interval < 1) return proc.priority;
+    return proc.priority - Math.floor(proc.readyWait / interval);
+  }
+
+  private cmpPriorityLive(a: Proc, b: Proc): number {
+    const delta = this.effectivePriority(a) - this.effectivePriority(b);
+    if (delta !== 0) return delta;
+    return cmpArrivalPid(a, b);
+  }
+
+  private cmpHrrn(a: Proc, b: Proc): number {
+    const left = (a.readyWait + a.burstTime) * b.burstTime;
+    const right = (b.readyWait + b.burstTime) * a.burstTime;
+    if (left !== right) return right - left;
+    return cmpArrivalPid(a, b);
+  }
+
+  private appendSwitch(t: number): void {
+    const last = this.slices[this.slices.length - 1];
+    if (last?.switch && last.end === t) {
+      last.end = t + 1;
+      return;
+    }
+    this.slices.push({ pid: null, start: t, end: t + 1, switch: true });
+  }
+
   private appendSlice(pid: number | null, t: number): void {
     const last = this.slices[this.slices.length - 1];
     if (pid === null && last && last.pid === null && last.end === t) {
@@ -530,7 +635,12 @@ export class SchedulerEngine {
     if (algorithm === 'fcfs' || algorithm === 'rr') {
       return this.ready.map((proc) => ({ pid: proc.pid, level: null }));
     }
-    const cmp = algorithm === 'priority-np' || algorithm === 'priority-p' ? cmpPriority : cmpRemaining;
+    const cmp =
+      algorithm === 'hrrn'
+        ? (a: Proc, b: Proc) => this.cmpHrrn(a, b)
+        : algorithm === 'priority-np' || algorithm === 'priority-p'
+          ? (a: Proc, b: Proc) => this.cmpPriorityLive(a, b)
+          : cmpRemaining;
     return this.ready
       .slice()
       .sort(cmp)
@@ -581,6 +691,10 @@ export class SchedulerEngine {
       ioTime: proc.ioTime,
       firstStartTime: proc.firstStart,
       level: this.options.algorithm === 'mlfq' && proc.state !== 'new' ? proc.level : null,
+      switchTime: proc.switchTime,
+      effectivePriority: this.options.agingInterval > 0 ? this.effectivePriority(proc) : null,
+      responseRatio:
+        this.options.algorithm === 'hrrn' ? (proc.readyWait + proc.burstTime) / proc.burstTime : null,
       history: proc.history.map((entry) => ({ ...entry })),
     };
   }
@@ -617,6 +731,13 @@ export class SchedulerEngine {
     if (this.slices[this.slices.length - 1].end !== this.currentTime) {
       throw new Error('甘特图结束时刻与时钟不一致');
     }
+    const switchTicks = this.slices
+      .filter((slice) => slice.switch)
+      .reduce((sum, slice) => sum + (slice.end - slice.start), 0);
+    const switchSum = this.procs.reduce((sum, proc) => sum + proc.switchTime, 0);
+    if (switchTicks !== switchSum) {
+      throw new Error(`切换开销 ${switchTicks} 与进程合计 ${switchSum} 不一致`);
+    }
     for (const proc of this.procs) {
       const owned = this.slices.filter((slice) => slice.pid === proc.pid);
       const ran = owned.reduce((sum, slice) => sum + (slice.end - slice.start), 0);
@@ -626,7 +747,7 @@ export class SchedulerEngine {
       if (proc.completionTime === null || proc.firstStart === null) {
         throw new Error(`P${proc.pid} 结束后缺少完成时间或首次运行时间`);
       }
-      const formula = proc.completionTime - proc.arrivalTime - proc.burstTime - proc.ioTime;
+      const formula = proc.completionTime - proc.arrivalTime - proc.burstTime - proc.ioTime - proc.switchTime;
       if (formula !== proc.readyWait) {
         throw new Error(`P${proc.pid} 就绪等待 ${proc.readyWait} 与公式 ${formula} 不一致`);
       }

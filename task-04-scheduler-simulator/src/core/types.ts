@@ -8,6 +8,7 @@ export type AlgorithmId =
   | 'rr'
   | 'priority-np'
   | 'priority-p'
+  | 'hrrn'
   | 'mlfq';
 
 export interface IoBurst {
@@ -34,19 +35,39 @@ export interface SchedulerOptions {
    * Length >= 3, each integer >= 1. Default [2, 4, 8].
    */
   mlfqQuantums?: number[];
+  /**
+   * Context-switch cost in time units, paid before every new dispatch.
+   * 0 disables it and leaves gantt slices unchanged. Default 0.
+   */
+  contextSwitch?: number;
+  /**
+   * Priority aging. Every this many ready-queue time units, the priority
+   * number decreases by 1. 0 disables aging. Default 0.
+   */
+  agingInterval?: number;
+  /**
+   * MLFQ boost period. At every positive multiple of this value, all
+   * arrived processes return to Q0. 0 disables boost. Default 0.
+   */
+  mlfqBoost?: number;
 }
 
 export interface NormalizedOptions {
   algorithm: AlgorithmId;
   quantum: number;
   mlfqQuantums: number[];
+  contextSwitch: number;
+  agingInterval: number;
+  mlfqBoost: number;
 }
 
 export interface GanttSlice {
-  /** null means the CPU was idle. */
+  /** null means the CPU was idle or paying a context switch. */
   pid: number | null;
   start: number;
   end: number;
+  /** Present only for a context-switch interval. Idle slices omit it. */
+  switch?: true;
 }
 
 export interface StateTransition {
@@ -70,6 +91,12 @@ export interface ProcessResult {
   firstStartTime: number | null;
   /** MLFQ queue index while known; 0 is highest. Null before the process arrives. */
   level: number | null;
+  /** Time spent inside context-switch intervals that loaded this process. */
+  switchTime: number;
+  /** Priority after aging. Null when aging is off. */
+  effectivePriority: number | null;
+  /** (ready wait + original burst) / original burst. Null unless the algorithm is HRRN. */
+  responseRatio: number | null;
   history: StateTransition[];
 }
 
@@ -96,6 +123,8 @@ export interface EngineSnapshot {
   finished: boolean;
   /** Process still holding the CPU after the last tick. Null if the CPU was released. */
   holdingPid: number | null;
+  /** True when the last tick was context-switch overhead rather than a CPU burst. */
+  contextSwitching: boolean;
   /** Process that occupied the CPU during the last tick. Null if that tick was idle or none ran. */
   lastExecutedPid: number | null;
   lastInterval: { start: number; end: number } | null;
@@ -165,13 +194,19 @@ export const ALGORITHM_CATALOG: readonly AlgorithmInfo[] = [
     id: 'priority-p',
     label: '优先级（抢占）',
     short: '优先级·抢占',
-    hint: '仅当新进程的优先级数值严格更小才抢占。相等不抢占。平局规则同非抢占。',
+    hint: '仅当新进程的优先级数值严格更小才抢占。相等不抢占。平局规则同非抢占。老化开启时用有效优先级比较。',
+  },
+  {
+    id: 'hrrn',
+    label: '最高响应比优先 HRRN',
+    short: 'HRRN',
+    hint: '非抢占。CPU 空闲时选响应比 (就绪等待 + 服务时间) / 服务时间 最大者。平局先到达时间再 PID。',
   },
   {
     id: 'mlfq',
     label: '多级反馈队列 MLFQ',
     short: 'MLFQ',
-    hint: '新进程进入最高级。时间片用尽降一级，最低级循环。被更高队列抢占时回到本队队首并保留剩余时间片。',
+    hint: '新进程进入最高级。时间片用尽降一级，最低级循环。被更高队列抢占时回到本队队首并保留剩余时间片。提升周期大于 0 时，每隔该时间全部回到 Q0。',
   },
 ] as const;
 

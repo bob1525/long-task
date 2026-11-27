@@ -6,6 +6,7 @@ export interface GanttSegment {
   start: number;
   end: number;
   label: string;
+  switch: boolean;
 }
 
 /**
@@ -18,7 +19,8 @@ export function toGanttSegments(slices: readonly GanttSlice[]): GanttSegment[] {
     pid: slice.pid,
     start: slice.start,
     end: slice.end,
-    label: slice.pid === null ? '空闲' : `P${slice.pid}`,
+    label: slice.switch ? '切换' : slice.pid === null ? '空闲' : `P${slice.pid}`,
+    switch: slice.switch === true,
   }));
 }
 

@@ -7,6 +7,10 @@ export interface Preset {
   algorithm?: AlgorithmId;
   quantum?: number;
   mlfqQuantums?: number[];
+  /** Omitted means 0, so loading A/B/C cannot keep a previous switch, aging, or boost value. */
+  contextSwitch?: number;
+  agingInterval?: number;
+  mlfqBoost?: number;
 }
 
 export const PRESETS: readonly Preset[] = [
@@ -62,6 +66,50 @@ export const PRESETS: readonly Preset[] = [
     processes: [
       { pid: 1, arrivalTime: 0, burstTime: 4, priority: 1, ioBursts: [{ afterCpu: 2, duration: 3 }] },
       { pid: 2, arrivalTime: 0, burstTime: 3, priority: 1 },
+    ],
+  },
+  {
+    id: 'D',
+    label: '用例 D 响应比',
+    algorithm: 'hrrn',
+    quantum: 2,
+    mlfqQuantums: [2, 4, 8],
+    contextSwitch: 0,
+    agingInterval: 0,
+    mlfqBoost: 0,
+    processes: [
+      { pid: 1, arrivalTime: 0, burstTime: 10, priority: 4 },
+      { pid: 2, arrivalTime: 1, burstTime: 10, priority: 5 },
+      { pid: 3, arrivalTime: 9, burstTime: 2, priority: 2 },
+    ],
+  },
+  {
+    id: 'E',
+    label: '用例 E 切换开销',
+    algorithm: 'fcfs',
+    quantum: 2,
+    mlfqQuantums: [2, 4, 8],
+    contextSwitch: 1,
+    agingInterval: 0,
+    mlfqBoost: 0,
+    processes: [
+      { pid: 1, arrivalTime: 0, burstTime: 4, priority: 2 },
+      { pid: 2, arrivalTime: 0, burstTime: 3, priority: 1 },
+      { pid: 3, arrivalTime: 6, burstTime: 2, priority: 3 },
+    ],
+  },
+  {
+    id: 'F',
+    label: '用例 F 队列提升',
+    algorithm: 'mlfq',
+    quantum: 2,
+    mlfqQuantums: [2, 4, 8],
+    contextSwitch: 0,
+    agingInterval: 0,
+    mlfqBoost: 4,
+    processes: [
+      { pid: 1, arrivalTime: 0, burstTime: 6, priority: 1 },
+      { pid: 2, arrivalTime: 0, burstTime: 4, priority: 1 },
     ],
   },
 ];
